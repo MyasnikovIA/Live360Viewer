@@ -14,11 +14,6 @@ public class H264Decoder {
     private static final String TAG = "H264Decoder";
     private static final String MIME = "video/avc";
 
-    /** Слушатель реального размера видео, который вернул кодек (из SPS). */
-    public interface OnVideoFormatListener {
-        void onVideoFormat(int width, int height);
-    }
-
     private MediaCodec codec;
     private final Surface surface;
     private final int width, height;
@@ -27,27 +22,24 @@ public class H264Decoder {
     private volatile boolean running = false;
     private Thread outputThread;
 
-    // ★ Слушатель реального размера — чтобы UI показал «Превью: WxH»
-    private volatile OnVideoFormatListener formatListener;
-
     public H264Decoder(Surface surface, int width, int height) {
         this.surface = surface;
         this.width = width;
         this.height = height;
     }
 
-    public void setOnVideoFormatListener(OnVideoFormatListener l) {
-        this.formatListener = l;
-    }
-
     public synchronized void start() throws IOException {
-        // Не задаём width/height жёстко — MediaCodec возьмёт SPS из потока.
+        // ★ Не задаём width/height жёстко — MediaCodec возьмёт SPS из потока.
+        //   Если очень хочется подсказать — передаём «планируемый» размер,
+        //   но кодек вправе проигнорировать, что мы и видим в логах.
         MediaFormat fmt = MediaFormat.createVideoFormat(MIME,
                 width > 0 ? width : 1920,
                 height > 0 ? height : 960);
         if (Build.VERSION.SDK_INT >= 21) {
             fmt.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 2 * 1024 * 1024);
         }
+        // Явно просим декодер не падать при несоответствии размера
+        // и не масштабировать в Surface (crop возьмёт из SPS).
         fmt.setInteger(MediaFormat.KEY_PUSH_BLANK_BUFFERS_ON_STOP, 1);
 
         codec = MediaCodec.createDecoderByType(MIME);
@@ -80,14 +72,12 @@ public class H264Decoder {
             try {
                 int outIdx = codec.dequeueOutputBuffer(info, 10000);
                 if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    // ★ Здесь реальный размер от камеры — берём для отладки
                     MediaFormat outFmt = codec.getOutputFormat();
                     Log.i(TAG, "output format changed: " + outFmt);
                     int w = outFmt.getInteger(MediaFormat.KEY_WIDTH);
                     int h = outFmt.getInteger(MediaFormat.KEY_HEIGHT);
                     Log.i(TAG, "decoder real size = " + w + "x" + h);
-                    // ★ Отдаём реальный размер наверх, в UI
-                    OnVideoFormatListener l = formatListener;
-                    if (l != null) l.onVideoFormat(w, h);
                 } else if (outIdx >= 0) {
                     codec.releaseOutputBuffer(outIdx, true);
                 }

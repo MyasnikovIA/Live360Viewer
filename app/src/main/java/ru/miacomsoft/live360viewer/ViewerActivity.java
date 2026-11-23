@@ -12,8 +12,6 @@ import android.opengl.GLSurfaceView;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
-import android.os.Handler;
-import android.os.Looper;
 import android.provider.MediaStore;
 import android.util.Log;
 import android.view.MotionEvent;
@@ -52,6 +50,9 @@ public class ViewerActivity extends AppCompatActivity {
 
     public static final String EXTRA_VIEW_MODE = "extra_view_mode";
 
+    private static final int VIDEO_W = 1280;
+    private static final int VIDEO_H = 640;
+
     private GLSurfaceView glSurface;
     private SphereRenderer sphereRenderer;
     private FlatRenderer flatRenderer;
@@ -61,7 +62,6 @@ public class ViewerActivity extends AppCompatActivity {
     private LiveViewSession session;
     private UsbCameraManager usb;
     private TextView overlay;
-    private TextView tvStats;
     private Button btnPhoto;
 
     private volatile boolean running = false;
@@ -73,14 +73,6 @@ public class ViewerActivity extends AppCompatActivity {
     private float lastX, lastY;
 
     private byte[] pendingPhotoJpeg;
-
-    // ===== Метрики: FPS + реальный размер кадра =====
-    private final Handler uiHandler = new Handler(Looper.getMainLooper());
-    private Runnable fpsUpdater;
-    private int lastFpsFrameCount = 0;
-    private long lastFpsTimeMs = 0L;
-    private volatile float currentFps = 0f;
-    private volatile String resolutionStr = "?×?";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -94,6 +86,7 @@ public class ViewerActivity extends AppCompatActivity {
         }
         Log.i(TAG, "viewMode = " + PhotoSettings.labelView(viewMode));
 
+        // ★ Разный layout под каждый режим
         if (viewMode == PhotoSettings.VIEW_MODE_FLAT) {
             setContentView(R.layout.activity_viewer_flat);
         } else {
@@ -102,7 +95,6 @@ public class ViewerActivity extends AppCompatActivity {
 
         glSurface = findViewById(R.id.glSurface);
         overlay   = findViewById(R.id.tvOverlay);
-        tvStats   = findViewById(R.id.tvStats);
         btnPhoto  = findViewById(R.id.btnPhoto);
 
         btnPhoto.setOnClickListener(v -> onTakePhotoClicked());
@@ -110,6 +102,7 @@ public class ViewerActivity extends AppCompatActivity {
         glSurface.setEGLContextClientVersion(2);
 
         if (viewMode == PhotoSettings.VIEW_MODE_FLAT) {
+            // ★ Плоская 360-панорама
             flatRenderer = new FlatRenderer();
             flatRenderer.setOnSurfaceReadyListener(st -> {
                 Log.i(TAG, "Flat onSurfaceReady: " + st);
@@ -126,6 +119,7 @@ public class ViewerActivity extends AppCompatActivity {
         }
         glSurface.setRenderMode(GLSurfaceView.RENDERMODE_CONTINUOUSLY);
 
+        // ★ Свайп-вращение имеет смысл только для сферы
         if (viewMode == PhotoSettings.VIEW_MODE_SPHERE) {
             glSurface.setOnTouchListener((v, e) -> {
                 switch (e.getActionMasked()) {
@@ -140,9 +134,6 @@ public class ViewerActivity extends AppCompatActivity {
                 return false;
             });
         }
-
-        refreshStats();
-        startFpsUpdater();
     }
 
     @Override
@@ -164,43 +155,6 @@ public class ViewerActivity extends AppCompatActivity {
             }
         }
         Log.w(TAG, "camera not attached");
-    }
-
-    // ===== FPS + Превью-разрешение =====
-
-    private void startFpsUpdater() {
-        lastFpsFrameCount = 0;
-        lastFpsTimeMs = System.currentTimeMillis();
-        currentFps = 0f;
-        fpsUpdater = new Runnable() {
-            @Override public void run() {
-                long now = System.currentTimeMillis();
-                int delta = frameCount - lastFpsFrameCount;
-                long dt = now - lastFpsTimeMs;
-                if (dt > 0) {
-                    currentFps = delta * 1000f / dt;
-                }
-                lastFpsFrameCount = frameCount;
-                lastFpsTimeMs = now;
-                refreshStats();
-                uiHandler.postDelayed(this, 1000);
-            }
-        };
-        uiHandler.postDelayed(fpsUpdater, 1000);
-    }
-
-    private void stopFpsUpdater() {
-        if (fpsUpdater != null) {
-            uiHandler.removeCallbacks(fpsUpdater);
-            fpsUpdater = null;
-        }
-    }
-
-    private void refreshStats() {
-        if (tvStats == null) return;
-        tvStats.setText(String.format(Locale.US,
-                "Превью: %s · %.1f fps · %d кадров",
-                resolutionStr, currentFps, frameCount));
     }
 
     // ============ Фото ============
@@ -347,30 +301,11 @@ public class ViewerActivity extends AppCompatActivity {
         if (surface != null) surface.release();
         surface = new Surface(st);
 
-        frameCount = 0;
-        lastFpsFrameCount = 0;
-        lastFpsTimeMs = System.currentTimeMillis();
-        currentFps = 0f;
-
-        // ★ Получаем выбранное разрешение превью
-        final int videoRes = PhotoSettings.getVideoResolution(this);
-        final int vW = PhotoSettings.getVideoWidth(videoRes);
-        final int vH = PhotoSettings.getVideoHeight(videoRes);
-        resolutionStr = vW + "×" + vH + " (запрос)";
-        refreshStats();
-
         try {
-            // Передаем запрошенное разрешение в декодер как подсказку
-            decoder = new H264Decoder(surface, vW, vH);
-            decoder.setOnVideoFormatListener((w, h) -> runOnUiThread(() -> {
-                // Если камера вернет другое разрешение, показываем реальное
-                resolutionStr = w + "×" + h;
-                refreshStats();
-                Log.i(TAG, "preview real size = " + w + "x" + h);
-            }));
+            decoder = new H264Decoder(surface, VIDEO_W, VIDEO_H);
             decoder.start();
             decoderReady.set(true);
-            Log.i(TAG, "decoder started (" + vW + "x" + vH + ")");
+            Log.i(TAG, "decoder started (" + VIDEO_W + "x" + VIDEO_H + ")");
         } catch (Exception e) {
             Log.e(TAG, "decoder start: " + e.getMessage());
             overlay.setText("decoder: " + e.getMessage());
@@ -379,7 +314,7 @@ public class ViewerActivity extends AppCompatActivity {
 
         final int photoRes = PhotoSettings.getResolution(this);
         Log.i(TAG, "using photo_res=0x" + Integer.toHexString(photoRes)
-                + " video_res=0x" + Integer.toHexString(videoRes));
+                + " (" + PhotoSettings.label(photoRes) + ")");
 
         usb = new UsbCameraManager(this);
         usb.start(new UsbCameraManager.Listener() {
@@ -389,15 +324,15 @@ public class ViewerActivity extends AppCompatActivity {
                                     android.hardware.usb.UsbEndpoint in,
                                     android.hardware.usb.UsbEndpoint out) {
                 Log.i(TAG, "USB connected. Starting LiveViewSession");
-
-                // ★ Передаем videoRes в сессию
-                session = new LiveViewSession(c, in, out, photoRes, videoRes,
+                session = new LiveViewSession(c, in, out, photoRes,
                         new LiveViewSession.FrameListener() {
                             @Override public void onVideoFrame(byte[] h264, long ptsUs) {
                                 H264Decoder d = decoder;
                                 if (decoderReady.get() && d != null) {
                                     d.feed(h264, ptsUs);
-                                    frameCount++;
+                                    int n = ++frameCount;
+                                    if ((n % 30) == 0)
+                                        runOnUiThread(() -> overlay.setText("frames: " + n));
                                 }
                             }
                             @Override public void onError(String msg) {
@@ -451,7 +386,6 @@ public class ViewerActivity extends AppCompatActivity {
 
     @Override protected void onDestroy() {
         super.onDestroy();
-        stopFpsUpdater();
         if (session != null) session.stop();
         if (usb != null) usb.stop();
         if (decoder != null) decoder.stop();
