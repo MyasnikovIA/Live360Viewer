@@ -1,130 +1,94 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout
-    xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:padding="16dp">
+    android:fillViewport="true">
 
-    <TextView
-        android:id="@+id/tvStatus"
-        android:layout_width="0dp"
+    <LinearLayout
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="@string/status_idle"
-        android:textSize="16sp"
-        app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"/>
+        android:orientation="vertical"
+        android:padding="16dp">
 
-    <TextView
-        android:id="@+id/tvPhotoResLabel"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:text="Разрешение фото:"
-        android:textSize="14sp"
-        app:layout_constraintTop_toBottomOf="@id/tvStatus"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"/>
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/status_idle"
+            android:textStyle="bold"
+            android:textSize="16sp"
+            android:paddingBottom="8dp" />
 
-    <Spinner
-        android:id="@+id/spPhotoRes"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        app:layout_constraintTop_toBottomOf="@id/tvPhotoResLabel"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"/>
+        <!-- Photo resolution (JPEG) -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Photo resolution (JPEG):" />
 
-    <TextView
-        android:id="@+id/tvViewModeLabel"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:text="Режим просмотра / трансляции:"
-        android:textSize="14sp"
-        app:layout_constraintTop_toBottomOf="@id/spPhotoRes"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"/>
+        <Spinner
+            android:id="@+id/spPhotoRes"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp" />
 
-    <Button
-        android:id="@+id/btnStartSphere"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:text="Сфера (3D)"
-        app:layout_constraintTop_toBottomOf="@id/tvViewModeLabel"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"/>
+        <!-- Video resolution (live H.264 stream) -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Video resolution (live stream):" />
 
-    <Button
-        android:id="@+id/btnStartFlat"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:text="Плоский (360×180)"
-        app:layout_constraintTop_toBottomOf="@id/btnStartSphere"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"/>
+        <Spinner
+            android:id="@+id/spVideoRes"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp" />
 
-    <!-- Сервер: ждём входящее подключение -->
-    <Button
-        android:id="@+id/btnStartStream"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:text="📡 Сервер (принимать клиентов)"
-        app:layout_constraintTop_toBottomOf="@id/btnStartFlat"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"/>
+        <!-- Кнопки -->
+        <Button
+            android:id="@+id/btnConnect"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Check camera" />
 
-    <!-- ★ Клиент: подключаемся к удалённому серверу -->
-    <Button
-        android:id="@+id/btnStartClient"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:text="📤 Клиент (отправить на сервер)"
-        app:layout_constraintTop_toBottomOf="@id/btnStartStream"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"/>
+        <Button
+            android:id="@+id/btnStartSphere"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Start Sphere (3D)" />
 
-    <Button
-        android:id="@+id/btnConnect"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:text="@string/btn_connect"
-        android:layout_marginTop="16dp"
-        app:layout_constraintTop_toBottomOf="@id/btnStartClient"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"/>
+        <Button
+            android:id="@+id/btnStartFlat"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Start Flat (360×180)" />
 
-    <Button
-        android:id="@+id/btnStop"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:text="@string/btn_stop"
-        android:layout_marginTop="8dp"
-        app:layout_constraintTop_toBottomOf="@id/btnConnect"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"/>
+        <Button
+            android:id="@+id/btnStartStream"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Start Stream (TCP server)" />
 
-    <ScrollView
-        android:id="@+id/scrollLog"
-        android:layout_width="0dp"
-        android:layout_height="0dp"
-        android:layout_marginTop="12dp"
-        app:layout_constraintTop_toBottomOf="@id/btnStop"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent">
+        <Button
+            android:id="@+id/btnStartClient"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Start Stream Client (send to remote)" />
 
+        <Button
+            android:id="@+id/btnStop"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Stop" />
+
+        <!-- Лог -->
         <TextView
             android:id="@+id/tvLog"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
             android:fontFamily="monospace"
-            android:textSize="11sp"/>
-    </ScrollView>
+            android:textSize="11sp"
+            android:textIsSelectable="true" />
 
-</androidx.constraintlayout.widget.ConstraintLayout>
+    </LinearLayout>
+</ScrollView>

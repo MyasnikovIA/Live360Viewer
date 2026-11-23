@@ -6,6 +6,9 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.SurfaceTexture;
 import android.hardware.usb.UsbDevice;
+import android.hardware.usb.UsbDeviceConnection;
+import android.hardware.usb.UsbEndpoint;
+import android.hardware.usb.UsbInterface;
 import android.hardware.usb.UsbManager;
 import android.net.Uri;
 import android.opengl.GLSurfaceView;
@@ -86,7 +89,6 @@ public class ViewerActivity extends AppCompatActivity {
         }
         Log.i(TAG, "viewMode = " + PhotoSettings.labelView(viewMode));
 
-        // ★ Разный layout под каждый режим
         if (viewMode == PhotoSettings.VIEW_MODE_FLAT) {
             setContentView(R.layout.activity_viewer_flat);
         } else {
@@ -102,7 +104,6 @@ public class ViewerActivity extends AppCompatActivity {
         glSurface.setEGLContextClientVersion(2);
 
         if (viewMode == PhotoSettings.VIEW_MODE_FLAT) {
-            // ★ Плоская 360-панорама
             flatRenderer = new FlatRenderer();
             flatRenderer.setOnSurfaceReadyListener(st -> {
                 Log.i(TAG, "Flat onSurfaceReady: " + st);
@@ -119,7 +120,7 @@ public class ViewerActivity extends AppCompatActivity {
         }
         glSurface.setRenderMode(GLSurfaceView.RENDERMODE_CONTINUOUSLY);
 
-        // ★ Свайп-вращение имеет смысл только для сферы
+        // Свайп-вращение имеет смысл только для сферы
         if (viewMode == PhotoSettings.VIEW_MODE_SPHERE) {
             glSurface.setOnTouchListener((v, e) -> {
                 switch (e.getActionMasked()) {
@@ -141,6 +142,33 @@ public class ViewerActivity extends AppCompatActivity {
         super.onResume();
         glSurface.onResume();
         logUsbPermissionState();
+        // onSurfaceCreated сработает после onResume и вызовет startCamera(st);
+        // отдельный рестарт здесь не нужен.
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        // Сначала гасим рендер — EGL-контекст будет уничтожен.
+        glSurface.onPause();
+        // Синхронно останавливаем камеру/декодер и сбрасываем cameraStarted.
+        // На resume GLSurfaceView пересоздаст контекст → onSurfaceCreated →
+        // onSurfaceReady → startCamera(st) со свежим SurfaceTexture.
+        stopCamera();
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        // Защита: если между onPause и onStop что-то успело перезапустить
+        // камеру (не должно, но onStop должен быть идемпотентным).
+        if (cameraStarted) stopCamera();
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        stopCamera();
     }
 
     private void logUsbPermissionState() {
@@ -155,6 +183,182 @@ public class ViewerActivity extends AppCompatActivity {
             }
         }
         Log.w(TAG, "camera not attached");
+    }
+
+    // ============ Камера ============
+
+    /**
+     * Единая точка входа: вызывается из onSurfaceReady (UI-поток).
+     *
+     *  - если камера уже запущена — SurfaceTexture изменился (пересоздание
+     *    Activity), меняем Surface у существующего H264Decoder через
+     *    updateSurface();
+     *  - иначе — полный запуск.
+     */
+    private void startCamera(SurfaceTexture st) {
+        if (st == null) {
+            Log.w(TAG, "startCamera: null SurfaceTexture");
+            return;
+        }
+
+        if (cameraStarted) {
+            if (decoder != null) {
+                Surface newS = new Surface(st);
+                try {
+                    decoder.updateSurface(newS);
+                    Surface old = surface;
+                    surface = newS;
+                    if (old != null && old != newS) {
+                        try { old.release(); } catch (Exception ignored) {}
+                    }
+                    Log.i(TAG, "startCamera: decoder surface updated");
+                } catch (IOException e) {
+                    Log.e(TAG, "updateSurface failed: " + e.getMessage(), e);
+                    try { newS.release(); } catch (Exception ignored) {}
+                }
+            } else {
+                Log.w(TAG, "startCamera: cameraStarted but decoder==null, ignoring");
+            }
+            return;
+        }
+
+        UsbManager mgr = (UsbManager) getSystemService(USB_SERVICE);
+        if (mgr == null) {
+            overlay.setText("No USB");
+            return;
+        }
+        UsbDevice cam = findCamera(mgr);
+        if (cam == null) {
+            overlay.setText("Camera not connected");
+            return;
+        }
+
+        cameraStarted = true;
+        running = true;
+        frameCount = 0;
+
+        surface = new Surface(st);
+        decoder = new H264Decoder(surface, VIDEO_W, VIDEO_H);
+        try {
+            decoder.start();
+            decoderReady.set(true);
+        } catch (IOException e) {
+            Log.e(TAG, "decoder.start failed: " + e.getMessage(), e);
+            cameraStarted = false;
+            running = false;
+            try { surface.release(); } catch (Exception ignored) {}
+            surface = null;
+            decoder = null;
+            overlay.setText("Decoder start failed");
+            return;
+        }
+
+        final int photoRes = PhotoSettings.getResolution(this);
+        final int videoRes = PhotoSettings.getVideoResolution(this);
+
+        usb = new UsbCameraManager(this);
+        usb.start(new UsbCameraManager.Listener() {
+            @Override
+            public void onConnected(UsbDeviceConnection conn, UsbInterface intf,
+                                    UsbEndpoint in, UsbEndpoint out) {
+                if (!cameraStarted) return;
+                session = new LiveViewSession(conn, in, out, photoRes, videoRes,
+                        new LiveViewSession.FrameListener() {
+                            @Override
+                            public void onVideoFrame(byte[] h264, long ptsUs) {
+                                H264Decoder d = decoder;
+                                if (d != null) d.feed(h264, ptsUs);
+                                int fc = ++frameCount;
+                                if (fc % 30 == 0) {
+                                    runOnUiThread(() -> {
+                                        if (overlay != null) overlay.setText("Frames: " + fc);
+                                    });
+                                }
+                            }
+                            @Override
+                            public void onError(String msg) {
+                                Log.e(TAG, "LiveView error: " + msg);
+                            }
+                        });
+                new Thread(() -> {
+                    boolean ok = session.start();
+                    if (!ok) {
+                        Log.e(TAG, "session.start failed");
+                        runOnUiThread(() -> {
+                            if (overlay != null) overlay.setText("Camera start failed");
+                        });
+                    }
+                }, "LV-start").start();
+            }
+
+            @Override
+            public void onDetached() {
+                Log.w(TAG, "camera detached");
+                stopCamera();
+            }
+
+            @Override
+            public void onPermissionDenied() {
+                Log.w(TAG, "USB permission denied");
+                stopCamera();
+                runOnUiThread(() -> Toast.makeText(ViewerActivity.this,
+                        "USB permission denied", Toast.LENGTH_LONG).show());
+            }
+
+            @Override
+            public void onError(String msg) {
+                Log.e(TAG, "USB error: " + msg);
+                stopCamera();
+            }
+        });
+    }
+
+    /**
+     * Полная синхронная остановка камеры. Идемпотентна.
+     * Сбрасывает cameraStarted в false — для корректного перезапуска после
+     * onPause/пересоздания Activity.
+     */
+    private void stopCamera() {
+        cameraStarted = false;
+        running = false;
+        decoderReady.set(false);
+
+        LiveViewSession s = session;
+        session = null;
+        if (s != null) {
+            try { s.stop(); }
+            catch (Exception e) { Log.w(TAG, "session.stop: " + e.getMessage()); }
+        }
+
+        UsbCameraManager u = usb;
+        usb = null;
+        if (u != null) {
+            try { u.stop(); }
+            catch (Exception e) { Log.w(TAG, "usb.stop: " + e.getMessage()); }
+        }
+
+        H264Decoder d = decoder;
+        decoder = null;
+        if (d != null) {
+            try { d.stop(); }
+            catch (Exception e) { Log.w(TAG, "decoder.stop: " + e.getMessage()); }
+        }
+
+        Surface sf = surface;
+        surface = null;
+        if (sf != null) {
+            try { sf.release(); }
+            catch (Exception e) { Log.w(TAG, "surface.release: " + e.getMessage()); }
+        }
+    }
+
+    private UsbDevice findCamera(UsbManager mgr) {
+        HashMap<String, UsbDevice> list = mgr.getDeviceList();
+        for (UsbDevice d : list.values()) {
+            if (d.getVendorId() == ScsiConstants.VENDOR_ID
+                    && d.getProductId() == ScsiConstants.PRODUCT_ID) return d;
+        }
+        return null;
     }
 
     // ============ Фото ============
@@ -190,205 +394,82 @@ public class ViewerActivity extends AppCompatActivity {
 
     private void savePhotoWithPermission(byte[] jpeg) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            onSaveResult(savePhotoToGalleryQ(jpeg), jpeg);
+            savePhotoQ(jpeg);
             return;
         }
-        if (ContextCompat.checkSelfPermission(this,
-                Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                == PackageManager.PERMISSION_GRANTED) {
-            onSaveResult(savePhotoToGalleryLegacy(jpeg), jpeg);
-        } else {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                != PackageManager.PERMISSION_GRANTED) {
             pendingPhotoJpeg = jpeg;
             ActivityCompat.requestPermissions(this,
                     new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE},
                     REQ_WRITE_STORAGE);
+            return;
+        }
+        savePhotoLegacy(jpeg);
+    }
+
+    private void savePhotoQ(byte[] jpeg) {
+        String name = "LIVE360_"
+                + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date())
+                + ".jpg";
+        ContentValues cv = new ContentValues();
+        cv.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+        cv.put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg");
+        cv.put(MediaStore.MediaColumns.RELATIVE_PATH,
+                Environment.DIRECTORY_PICTURES + "/Live360Viewer");
+        Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cv);
+        if (uri == null) {
+            overlay.setText("Save failed: uri null");
+            return;
+        }
+        try (OutputStream os = getContentResolver().openOutputStream(uri)) {
+            if (os == null) throw new IOException("openOutputStream null");
+            os.write(jpeg);
+            os.flush();
+            overlay.setText("Saved: " + name);
+            Toast.makeText(this, "Фото сохранено: " + name, Toast.LENGTH_LONG).show();
+        } catch (IOException e) {
+            Log.e(TAG, "savePhotoQ: " + e.getMessage(), e);
+            overlay.setText("Save failed: " + e.getMessage());
+        }
+    }
+
+    private void savePhotoLegacy(byte[] jpeg) {
+        File dir = new File(Environment.getExternalStoragePublicDirectory(
+                Environment.DIRECTORY_PICTURES), "Live360Viewer");
+        if (!dir.exists() && !dir.mkdirs()) {
+            overlay.setText("Save failed: mkdirs");
+            return;
+        }
+        String name = "LIVE360_"
+                + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date())
+                + ".jpg";
+        File f = new File(dir, name);
+        try (FileOutputStream fos = new FileOutputStream(f)) {
+            fos.write(jpeg);
+            fos.flush();
+            overlay.setText("Saved: " + f.getAbsolutePath());
+            Toast.makeText(this, "Фото: " + f.getAbsolutePath(), Toast.LENGTH_LONG).show();
+        } catch (IOException e) {
+            Log.e(TAG, "savePhotoLegacy: " + e.getMessage(), e);
+            overlay.setText("Save failed: " + e.getMessage());
         }
     }
 
     @Override
-    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
-                                           @NonNull int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == REQ_WRITE_STORAGE) {
-            if (grantResults.length > 0
-                    && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                if (pendingPhotoJpeg != null) {
-                    onSaveResult(savePhotoToGalleryLegacy(pendingPhotoJpeg), pendingPhotoJpeg);
-                    pendingPhotoJpeg = null;
-                }
-            } else {
-                overlay.setText("Нет разрешения на запись");
-                Toast.makeText(this, "Для сохранения фото нужно разрешение",
-                        Toast.LENGTH_LONG).show();
-                pendingPhotoJpeg = null;
-            }
-        }
-    }
-
-    private void onSaveResult(Uri uri, byte[] jpeg) {
-        if (uri != null) {
-            Log.i(TAG, "saved: " + uri + " (" + jpeg.length + " bytes)");
-            overlay.setText("✔ " + uri.getLastPathSegment()
-                    + " (" + jpeg.length / 1024 + " КБ)");
-            Toast.makeText(this,
-                    "Сохранено: " + uri.getLastPathSegment()
-                            + " (" + jpeg.length / 1024 + " КБ)\nПуть: " + uri,
-                    Toast.LENGTH_LONG).show();
+    public void onRequestPermissionsResult(int req, @NonNull String[] perms,
+                                           @NonNull int[] res) {
+        super.onRequestPermissionsResult(req, perms, res);
+        if (req != REQ_WRITE_STORAGE) return;
+        if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED
+                && pendingPhotoJpeg != null) {
+            byte[] j = pendingPhotoJpeg;
+            pendingPhotoJpeg = null;
+            savePhotoLegacy(j);
         } else {
-            overlay.setText("Save failed");
-            Toast.makeText(this, "Не удалось сохранить", Toast.LENGTH_LONG).show();
+            pendingPhotoJpeg = null;
+            Toast.makeText(this, "Без разрешения фото не сохранить",
+                    Toast.LENGTH_LONG).show();
         }
-    }
-
-    private Uri savePhotoToGalleryQ(byte[] jpeg) {
-        String name = "L360_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
-                .format(new Date()) + ".jpg";
-        ContentValues v = new ContentValues();
-        v.put(MediaStore.Images.Media.DISPLAY_NAME, name);
-        v.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
-        v.put(MediaStore.Images.Media.RELATIVE_PATH,
-                Environment.DIRECTORY_PICTURES + "/Live360");
-        Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
-        if (uri == null) {
-            Log.e(TAG, "saveQ: insert returned null");
-            return null;
-        }
-        try (OutputStream os = getContentResolver().openOutputStream(uri)) {
-            if (os == null) {
-                Log.e(TAG, "saveQ: openOutputStream returned null for " + uri);
-                return null;
-            }
-            os.write(jpeg);
-            Log.i(TAG, "saveQ: wrote " + jpeg.length + " bytes to " + uri);
-            return uri;
-        } catch (IOException e) {
-            Log.e(TAG, "saveQ: " + e.getMessage());
-            return null;
-        }
-    }
-
-    @SuppressWarnings("deprecation")
-    private Uri savePhotoToGalleryLegacy(byte[] jpeg) {
-        String name = "L360_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
-                .format(new Date()) + ".jpg";
-        File dir = new File(Environment.getExternalStoragePublicDirectory(
-                Environment.DIRECTORY_PICTURES), "Live360");
-        if (!dir.exists() && !dir.mkdirs()) {
-            Log.e(TAG, "saveLegacy: mkdirs failed for " + dir);
-            return null;
-        }
-        File f = new File(dir, name);
-        try (FileOutputStream fos = new FileOutputStream(f)) {
-            fos.write(jpeg);
-            android.media.MediaScannerConnection.scanFile(
-                    this, new String[]{f.getAbsolutePath()},
-                    new String[]{"image/jpeg"}, null);
-            Log.i(TAG, "saveLegacy: wrote " + jpeg.length + " bytes to " + f);
-            return Uri.fromFile(f);
-        } catch (IOException e) {
-            Log.e(TAG, "saveLegacy: " + e.getMessage());
-            return null;
-        }
-    }
-
-    // ============ Камера ============
-
-    private void startCamera(SurfaceTexture st) {
-        if (cameraStarted) return;
-        cameraStarted = true;
-        if (st == null) { overlay.setText("SurfaceTexture null"); return; }
-
-        if (surface != null) surface.release();
-        surface = new Surface(st);
-
-        try {
-            decoder = new H264Decoder(surface, VIDEO_W, VIDEO_H);
-            decoder.start();
-            decoderReady.set(true);
-            Log.i(TAG, "decoder started (" + VIDEO_W + "x" + VIDEO_H + ")");
-        } catch (Exception e) {
-            Log.e(TAG, "decoder start: " + e.getMessage());
-            overlay.setText("decoder: " + e.getMessage());
-            return;
-        }
-
-        final int photoRes = PhotoSettings.getResolution(this);
-        Log.i(TAG, "using photo_res=0x" + Integer.toHexString(photoRes)
-                + " (" + PhotoSettings.label(photoRes) + ")");
-
-        usb = new UsbCameraManager(this);
-        usb.start(new UsbCameraManager.Listener() {
-            @Override
-            public void onConnected(android.hardware.usb.UsbDeviceConnection c,
-                                    android.hardware.usb.UsbInterface i,
-                                    android.hardware.usb.UsbEndpoint in,
-                                    android.hardware.usb.UsbEndpoint out) {
-                Log.i(TAG, "USB connected. Starting LiveViewSession");
-                session = new LiveViewSession(c, in, out, photoRes,
-                        new LiveViewSession.FrameListener() {
-                            @Override public void onVideoFrame(byte[] h264, long ptsUs) {
-                                H264Decoder d = decoder;
-                                if (decoderReady.get() && d != null) {
-                                    d.feed(h264, ptsUs);
-                                    int n = ++frameCount;
-                                    if ((n % 30) == 0)
-                                        runOnUiThread(() -> overlay.setText("frames: " + n));
-                                }
-                            }
-                            @Override public void onError(String msg) {
-                                Log.e(TAG, "LiveView error: " + msg);
-                                runOnUiThread(() -> overlay.setText("Err: " + msg));
-                            }
-                        });
-                final LiveViewSession sess = session;
-                new Thread(() -> {
-                    boolean ok = sess.start();
-                    running = ok;
-                    runOnUiThread(() -> overlay.setText(ok
-                            ? "Live view started (" + PhotoSettings.label(photoRes) + ")"
-                            : "Start failed"));
-                    Log.i(TAG, "session.start() = " + ok);
-                }, "LV-start").start();
-            }
-            @Override public void onDetached() {
-                runOnUiThread(() -> overlay.setText("Detached"));
-            }
-            @Override public void onPermissionDenied() {
-                Log.e(TAG, "USB permission denied");
-                runOnUiThread(() -> {
-                    overlay.setText("Нет разрешения USB");
-                    Toast.makeText(ViewerActivity.this,
-                            "Разрешение на USB-камеру не выдано", Toast.LENGTH_LONG).show();
-                });
-                cameraStarted = false;
-            }
-            @Override public void onError(String msg) {
-                runOnUiThread(() -> overlay.setText("USB: " + msg));
-            }
-        });
-    }
-
-    @Override protected void onPause() {
-        super.onPause();
-        final LiveViewSession s = session; session = null; running = false;
-        if (s != null) new Thread(s::stop, "LV-stop").start();
-
-        final UsbCameraManager u = usb; usb = null;
-        if (u != null) new Thread(u::stop, "USB-stop").start();
-
-        final H264Decoder d = decoder; decoder = null; decoderReady.set(false);
-        if (d != null) new Thread(d::stop, "dec-stop").start();
-
-        if (surface != null) { surface.release(); surface = null; }
-        cameraStarted = false;
-        glSurface.onPause();
-    }
-
-    @Override protected void onDestroy() {
-        super.onDestroy();
-        if (session != null) session.stop();
-        if (usb != null) usb.stop();
-        if (decoder != null) decoder.stop();
-        if (surface != null) { surface.release(); surface = null; }
     }
 }

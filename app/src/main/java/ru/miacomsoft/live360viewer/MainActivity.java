@@ -32,6 +32,7 @@ public class MainActivity extends AppCompatActivity {
 
     private TextView tvStatus, tvLog;
     private Spinner spPhotoRes;
+    private Spinner spVideoRes;   
 
     private PendingIntent permIntent;
     private boolean isReceiverRegistered = false;
@@ -63,14 +64,16 @@ public class MainActivity extends AppCompatActivity {
         tvStatus    = findViewById(R.id.tvStatus);
         tvLog       = findViewById(R.id.tvLog);
         spPhotoRes  = findViewById(R.id.spPhotoRes);
+        spVideoRes  = findViewById(R.id.spVideoRes);   // ★ NEW
         Button btnConnect     = findViewById(R.id.btnConnect);
         Button btnStartSphere = findViewById(R.id.btnStartSphere);
         Button btnStartFlat   = findViewById(R.id.btnStartFlat);
         Button btnStartStream = findViewById(R.id.btnStartStream);
-        Button btnStartClient = findViewById(R.id.btnStartClient);   // ★ new
+        Button btnStartClient = findViewById(R.id.btnStartClient);
         Button btnStop        = findViewById(R.id.btnStop);
 
         setupPhotoResSpinner();
+        setupVideoResSpinner();   // ★ NEW
 
         int flags = PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT;
         permIntent = PendingIntent.getBroadcast(this, 0,
@@ -93,7 +96,9 @@ public class MainActivity extends AppCompatActivity {
         btnStartSphere.setOnClickListener(v -> {
             int photoRes = PhotoSettings.getResolution(this);
             PhotoSettings.setViewMode(this, PhotoSettings.VIEW_MODE_SPHERE);
-            log("Opening SPHERE viewer (photo_res=0x" + Integer.toHexString(photoRes) + ")");
+            log("Opening SPHERE viewer (photo_res=0x" + Integer.toHexString(photoRes)
+                    + ", video_res=0x" + Integer.toHexString(
+                    PhotoSettings.getVideoResolution(this)) + ")");
             Intent i = new Intent(this, ViewerActivity.class);
             i.putExtra(ViewerActivity.EXTRA_VIEW_MODE, PhotoSettings.VIEW_MODE_SPHERE);
             startActivity(i);
@@ -102,13 +107,14 @@ public class MainActivity extends AppCompatActivity {
         btnStartFlat.setOnClickListener(v -> {
             int photoRes = PhotoSettings.getResolution(this);
             PhotoSettings.setViewMode(this, PhotoSettings.VIEW_MODE_FLAT);
-            log("Opening FLAT viewer (photo_res=0x" + Integer.toHexString(photoRes) + ")");
+            log("Opening FLAT viewer (photo_res=0x" + Integer.toHexString(photoRes)
+                    + ", video_res=0x" + Integer.toHexString(
+                    PhotoSettings.getVideoResolution(this)) + ")");
             Intent i = new Intent(this, ViewerActivity.class);
             i.putExtra(ViewerActivity.EXTRA_VIEW_MODE, PhotoSettings.VIEW_MODE_FLAT);
             startActivity(i);
         });
 
-        // Сервер (старое поведение: ждём клиента)
         btnStartStream.setOnClickListener(v -> {
             log("Opening STREAMER (raw H.264 over TCP server)");
             Intent i = new Intent(this, StreamerActivity.class);
@@ -116,7 +122,6 @@ public class MainActivity extends AppCompatActivity {
             startActivity(i);
         });
 
-        // ★ Новый режим: клиент (отправляем на удалённый сервер)
         btnStartClient.setOnClickListener(v -> {
             log("Opening STREAM CLIENT (send raw H.264 to remote)");
             startActivity(new Intent(this, StreamerClientActivity.class));
@@ -166,7 +171,41 @@ public class MainActivity extends AppCompatActivity {
                             Toast.LENGTH_SHORT).show();
                 }
             }
-            @Override public void onNothingSelected(AdapterView<?> parent) { /* no-op */ }
+            @Override public void onNothingSelected(AdapterView<?> parent) { }
+        });
+    }
+
+    // ★ NEW: спиннер video_res
+    private void setupVideoResSpinner() {
+        final int[] codes = PhotoSettings.allVideoCodes();
+        String[] labels = new String[codes.length];
+        for (int i = 0; i < codes.length; i++) labels[i] = PhotoSettings.labelVideo(codes[i]);
+
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this,
+                android.R.layout.simple_spinner_item, labels);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spVideoRes.setAdapter(adapter);
+
+        int saved = PhotoSettings.getVideoResolution(this);
+        for (int i = 0; i < codes.length; i++) {
+            if (codes[i] == saved) { spVideoRes.setSelection(i); break; }
+        }
+
+        spVideoRes.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int pos, long id) {
+                int code = codes[pos];
+                int prev = PhotoSettings.getVideoResolution(MainActivity.this);
+                PhotoSettings.setVideoResolution(MainActivity.this, code);
+                log("Video resolution → " + PhotoSettings.labelVideo(code)
+                        + " (0x" + Integer.toHexString(code) + ")");
+                if (prev != code) {
+                    Toast.makeText(MainActivity.this,
+                            "Применится при следующем запуске трансляции",
+                            Toast.LENGTH_SHORT).show();
+                }
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) { }
         });
     }
 

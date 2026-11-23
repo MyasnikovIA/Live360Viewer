@@ -23,7 +23,11 @@
         android:textColorHint="#888888"
         android:inputType="text"
         android:fontFamily="monospace"/>
-
+    <Button
+        android:id="@+id/btnChangeRes"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Video res…" />
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"

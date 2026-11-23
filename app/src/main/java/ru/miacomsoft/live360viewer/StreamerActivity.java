@@ -1,5 +1,6 @@
 package ru.miacomsoft.live360viewer;
 
+import android.app.AlertDialog;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbDeviceConnection;
 import android.hardware.usb.UsbEndpoint;
@@ -22,14 +23,18 @@ import ru.miacomsoft.live360viewer.usb.ScsiConstants;
 import ru.miacomsoft.live360viewer.usb.UsbCameraManager;
 
 /**
- * Экран трансляции.
+ * Экран трансляции (TCP-сервер).
  *
  * Сценарий:
- *   1) onDestroy-Create — запускается TCP-сервер и ждёт клиента.
+ *   1) onCreate — запускается TCP-сервер и ждёт клиента.
  *   2) onClientConnected — стартует USB-камера (LiveViewSession).
  *   3) onVideoFrame     — сырые Annex-B кадры уходят прямо в сокет.
  *   4) onClientDisconnected — камера останавливается, сервер снова ждёт.
  *   5) При выходе из Activity — всё останавливается.
+ *
+ * Кнопка "Video res…" позволяет менять video_res на лету через
+ * LiveViewSession.changeVideoRes(): STOP_LIVE_VIEW → SET_ALL_SETTINGS
+ * → START_LIVE_VIEW. H264StreamServer кэширует SPS/PPS и отдаст новый IDR.
  */
 public class StreamerActivity extends AppCompatActivity {
 
@@ -40,6 +45,7 @@ public class StreamerActivity extends AppCompatActivity {
 
     private TextView tvStatus;
     private TextView tvLog;
+    private Button btnChangeRes;
 
     private H264StreamServer server;
     private UsbCameraManager usb;
@@ -53,13 +59,15 @@ public class StreamerActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_streamer);
 
-        tvStatus = findViewById(R.id.tvStatus);
-        tvLog    = findViewById(R.id.tvLog);
+        tvStatus     = findViewById(R.id.tvStatus);
+        tvLog        = findViewById(R.id.tvLog);
+        btnChangeRes = findViewById(R.id.btnChangeRes);
         Button btnStop = findViewById(R.id.btnStop);
 
         port = getIntent().getIntExtra(EXTRA_PORT, DEFAULT_PORT);
 
         btnStop.setOnClickListener(v -> finish());
+        btnChangeRes.setOnClickListener(v -> showVideoResDialog());
 
         startServer();
     }
@@ -126,7 +134,9 @@ public class StreamerActivity extends AppCompatActivity {
 
         streaming = true;
         final int photoRes = PhotoSettings.getResolution(this);
-        Log.i(TAG, "starting camera, photoRes=0x" + Integer.toHexString(photoRes));
+        final int videoRes = PhotoSettings.getVideoResolution(this);
+        Log.i(TAG, "starting camera, photoRes=0x" + Integer.toHexString(photoRes)
+                + " videoRes=0x" + Integer.toHexString(videoRes));
 
         usb = new UsbCameraManager(this);
         usb.start(new UsbCameraManager.Listener() {
@@ -137,7 +147,7 @@ public class StreamerActivity extends AppCompatActivity {
                     Log.w(TAG, "client gone during camera setup — abort");
                     return;
                 }
-                session = new LiveViewSession(conn, in, out, photoRes,
+                session = new LiveViewSession(conn, in, out, photoRes, videoRes,
                         new LiveViewSession.FrameListener() {
                             @Override
                             public void onVideoFrame(byte[] h264, long ptsUs) {
@@ -153,8 +163,10 @@ public class StreamerActivity extends AppCompatActivity {
                     boolean ok = session.start();
                     runOnUiThread(() -> {
                         if (ok) {
-                            tvStatus.setText("Трансляция активна");
-                            log("Streaming started");
+                            tvStatus.setText("Трансляция активна (video_res=0x"
+                                    + Integer.toHexString(videoRes) + ")");
+                            log("Streaming started, video_res=0x"
+                                    + Integer.toHexString(videoRes));
                         } else {
                             tvStatus.setText("Не удалось запустить камеру");
                             log("LiveView start failed");
@@ -214,6 +226,48 @@ public class StreamerActivity extends AppCompatActivity {
             }
         }
         return null;
+    }
+
+    // ============ Runtime change video_res ============
+
+    private void showVideoResDialog() {
+        final LiveViewSession s = session;
+        if (s == null || !streaming) {
+            Toast.makeText(this, "Трансляция не активна", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        final int[] codes = PhotoSettings.allVideoCodes();
+        String[] labels = new String[codes.length];
+        for (int i = 0; i < codes.length; i++) labels[i] = PhotoSettings.labelVideo(codes[i]);
+
+        new AlertDialog.Builder(this)
+                .setTitle("Video resolution (live)")
+                .setItems(labels, (d, which) -> {
+                    final int newRes = codes[which];
+                    if (newRes == s.getVideoRes()) {
+                        log("changeVideoRes: already 0x" + Integer.toHexString(newRes));
+                        return;
+                    }
+                    log("changeVideoRes → " + PhotoSettings.labelVideo(newRes)
+                            + " (0x" + Integer.toHexString(newRes) + ")");
+                    new Thread(() -> {
+                        boolean ok = s.changeVideoRes(newRes);
+                        if (ok) PhotoSettings.setVideoResolution(this, newRes);
+                        runOnUiThread(() -> {
+                            log("changeVideoRes result=" + ok);
+                            if (ok) {
+                                tvStatus.setText("Трансляция активна (video_res=0x"
+                                        + Integer.toHexString(newRes) + ")");
+                            } else {
+                                Toast.makeText(this,
+                                        "Не удалось сменить video_res",
+                                        Toast.LENGTH_SHORT).show();
+                            }
+                        });
+                    }, "video-res-change").start();
+                })
+                .show();
     }
 
     // ============ Lifecycle ============
