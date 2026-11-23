@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
@@ -9,8 +8,6 @@
     <uses-feature android:name="android.hardware.usb.host" android:required="true"/>
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28"/>
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
-
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:allowBackup="true"
@@ -34,9 +31,16 @@
             android:screenOrientation="landscape"
             android:exported="false" />
 
-        <!-- ★ Сервер (приём клиентов) -->
+        <!-- ★ WebRTC сервер (браузер) -->
         <activity
             android:name=".StreamerActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:screenOrientation="portrait"
+            android:exported="false" />
+
+        <!-- ★ VLC сервер (raw H.264 over TCP) -->
+        <activity
+            android:name=".VlcStreamerActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:screenOrientation="portrait"
             android:exported="false" />

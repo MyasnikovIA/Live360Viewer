@@ -63,10 +63,16 @@
             android:text="Start Flat (360×180)" />
 
         <Button
-            android:id="@+id/btnStartStream"
+            android:id="@+id/btnStartWebRtc"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Start Stream (TCP server)" />
+            android:text="Start WebRTC (Browser)" />
+
+        <Button
+            android:id="@+id/btnStartVlc"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Start VLC Stream (TCP H.264)" />
 
         <Button
             android:id="@+id/btnStartClient"

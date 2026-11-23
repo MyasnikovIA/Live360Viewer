@@ -61,19 +61,21 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        tvStatus    = findViewById(R.id.tvStatus);
-        tvLog       = findViewById(R.id.tvLog);
-        spPhotoRes  = findViewById(R.id.spPhotoRes);
-        spVideoRes  = findViewById(R.id.spVideoRes);   // ★ NEW
+        tvStatus   = findViewById(R.id.tvStatus);
+        tvLog      = findViewById(R.id.tvLog);
+        spPhotoRes = findViewById(R.id.spPhotoRes);
+        spVideoRes = findViewById(R.id.spVideoRes);
+
         Button btnConnect     = findViewById(R.id.btnConnect);
         Button btnStartSphere = findViewById(R.id.btnStartSphere);
         Button btnStartFlat   = findViewById(R.id.btnStartFlat);
-        Button btnStartStream = findViewById(R.id.btnStartStream);
+        Button btnStartWebRtc = findViewById(R.id.btnStartWebRtc);   // ★ WebRTC
+        Button btnStartVlc    = findViewById(R.id.btnStartVlc);      // ★ VLC H.264
         Button btnStartClient = findViewById(R.id.btnStartClient);
         Button btnStop        = findViewById(R.id.btnStop);
 
         setupPhotoResSpinner();
-        setupVideoResSpinner();   // ★ NEW
+        setupVideoResSpinner();
 
         int flags = PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT;
         permIntent = PendingIntent.getBroadcast(this, 0,
@@ -115,10 +117,14 @@ public class MainActivity extends AppCompatActivity {
             startActivity(i);
         });
 
-        btnStartStream.setOnClickListener(v -> {
-            log("Opening STREAMER (raw H.264 over TCP server)");
-            Intent i = new Intent(this, StreamerActivity.class);
-            startActivity(i);
+        btnStartWebRtc.setOnClickListener(v -> {
+            log("Opening WebRTC server (browser)");
+            startActivity(new Intent(this, StreamerActivity.class));
+        });
+
+        btnStartVlc.setOnClickListener(v -> {
+            log("Opening VLC server (raw H.264 over TCP)");
+            startActivity(new Intent(this, VlcStreamerActivity.class));
         });
 
         btnStartClient.setOnClickListener(v -> {
@@ -174,7 +180,6 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    // ★ NEW: спиннер video_res
     private void setupVideoResSpinner() {
         final int[] codes = PhotoSettings.allVideoCodes();
         String[] labels = new String[codes.length];
