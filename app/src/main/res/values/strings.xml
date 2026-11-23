@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Live 360 Viewer</string>
+    <string name="btn_connect">Connect to camera</string>
+    <string name="btn_start">Start live view</string>
+    <string name="btn_stop">Stop</string>
+    <string name="status_idle">Idle</string>
+    <string name="status_connecting">Connecting…</string>
+    <string name="status_streaming">Streaming</string>
+</resources>

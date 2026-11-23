@@ -1,0 +1,140 @@
+package ru.miacomsoft.live360viewer;
+
+import android.content.Intent;
+import android.hardware.usb.UsbDevice;
+import android.hardware.usb.UsbManager;
+import android.os.Bundle;
+import android.util.Log;
+import android.view.View;
+import android.widget.AdapterView;
+import android.widget.ArrayAdapter;
+import android.widget.Button;
+import android.widget.Spinner;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import androidx.appcompat.app.AppCompatActivity;
+
+import java.util.HashMap;
+
+import ru.miacomsoft.live360viewer.settings.PhotoSettings;
+import ru.miacomsoft.live360viewer.usb.ScsiConstants;
+
+public class MainActivity extends AppCompatActivity {
+
+    private static final String TAG = "MainActivity";
+
+    private TextView tvStatus, tvLog;
+    private Spinner spPhotoRes;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+
+        tvStatus    = findViewById(R.id.tvStatus);
+        tvLog       = findViewById(R.id.tvLog);
+        spPhotoRes  = findViewById(R.id.spPhotoRes);
+        Button btnConnect     = findViewById(R.id.btnConnect);
+        Button btnStartSphere = findViewById(R.id.btnStartSphere);
+        Button btnStartFlat   = findViewById(R.id.btnStartFlat);
+        Button btnStop        = findViewById(R.id.btnStop);
+
+        setupPhotoResSpinner();
+
+        btnConnect.setOnClickListener(v -> {
+            log("Check camera");
+            tvStatus.setText(R.string.status_connecting);
+            checkCameraPresence();
+        });
+
+        // ★ Запуск просмотра сферы
+        btnStartSphere.setOnClickListener(v -> {
+            int photoRes = PhotoSettings.getResolution(this);
+            PhotoSettings.setViewMode(this, PhotoSettings.VIEW_MODE_SPHERE);
+            log("Opening SPHERE viewer (photo_res=0x" + Integer.toHexString(photoRes) + ")");
+            Intent i = new Intent(this, ViewerActivity.class);
+            i.putExtra(ViewerActivity.EXTRA_VIEW_MODE, PhotoSettings.VIEW_MODE_SPHERE);
+            startActivity(i);
+        });
+
+        // ★ Запуск плоской 360-панорамы
+        btnStartFlat.setOnClickListener(v -> {
+            int photoRes = PhotoSettings.getResolution(this);
+            PhotoSettings.setViewMode(this, PhotoSettings.VIEW_MODE_FLAT);
+            log("Opening FLAT viewer (photo_res=0x" + Integer.toHexString(photoRes) + ")");
+            Intent i = new Intent(this, ViewerActivity.class);
+            i.putExtra(ViewerActivity.EXTRA_VIEW_MODE, PhotoSettings.VIEW_MODE_FLAT);
+            startActivity(i);
+        });
+
+        btnStop.setOnClickListener(v -> {
+            log("Stop");
+            tvStatus.setText(R.string.status_idle);
+        });
+    }
+
+    private void setupPhotoResSpinner() {
+        final int[] codes = PhotoSettings.allCodes();
+        String[] labels = new String[codes.length];
+        for (int i = 0; i < codes.length; i++) labels[i] = PhotoSettings.label(codes[i]);
+
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this,
+                android.R.layout.simple_spinner_item, labels);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spPhotoRes.setAdapter(adapter);
+
+        int saved = PhotoSettings.getResolution(this);
+        for (int i = 0; i < codes.length; i++) {
+            if (codes[i] == saved) { spPhotoRes.setSelection(i); break; }
+        }
+
+        spPhotoRes.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int pos, long id) {
+                int code = codes[pos];
+                int prev = PhotoSettings.getResolution(MainActivity.this);
+                PhotoSettings.setResolution(MainActivity.this, code);
+                log("Photo resolution → " + PhotoSettings.label(code)
+                        + " (0x" + Integer.toHexString(code) + ")");
+                if (prev != code) {
+                    Toast.makeText(MainActivity.this,
+                            "Применится при следующем запуске трансляции",
+                            Toast.LENGTH_SHORT).show();
+                }
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) { /* no-op */ }
+        });
+    }
+
+    private void checkCameraPresence() {
+        UsbManager mgr = (UsbManager) getSystemService(USB_SERVICE);
+        if (mgr == null) { log("No UsbManager"); tvStatus.setText(R.string.status_idle); return; }
+
+        HashMap<String, UsbDevice> list = mgr.getDeviceList();
+        UsbDevice found = null;
+        for (UsbDevice d : list.values()) {
+            Log.d(TAG, "USB vid=" + d.getVendorId() + " pid=" + d.getProductId());
+            if (d.getVendorId() == ScsiConstants.VENDOR_ID
+                    && d.getProductId() == ScsiConstants.PRODUCT_ID) { found = d; break; }
+        }
+        if (found == null) {
+            log("Camera not found");
+            tvStatus.setText(R.string.status_idle);
+            return;
+        }
+        log("Camera found, hasPermission=" + mgr.hasPermission(found));
+        tvStatus.setText("Camera detected. Tap Start");
+    }
+
+    private void log(String s) {
+        Log.d(TAG, s);
+        runOnUiThread(() -> {
+            tvLog.append(s); tvLog.append("\n");
+            int scroll = tvLog.getLayout() != null
+                    ? tvLog.getLayout().getLineTop(tvLog.getLineCount()) - tvLog.getHeight()
+                    : 0;
+            if (scroll > 0) tvLog.scrollTo(0, scroll);
+        });
+    }
+}
