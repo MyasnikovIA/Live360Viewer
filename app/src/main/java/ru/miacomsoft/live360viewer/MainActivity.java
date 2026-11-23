@@ -32,7 +32,7 @@ public class MainActivity extends AppCompatActivity {
 
     private TextView tvStatus, tvLog;
     private Spinner spPhotoRes;
-    private Spinner spVideoRes;   
+    private Spinner spVideoRes;
 
     private PendingIntent permIntent;
     private boolean isReceiverRegistered = false;

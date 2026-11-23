@@ -10,6 +10,7 @@ import android.hardware.usb.UsbDeviceConnection;
 import android.hardware.usb.UsbEndpoint;
 import android.hardware.usb.UsbInterface;
 import android.hardware.usb.UsbManager;
+import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.opengl.GLSurfaceView;
 import android.os.Build;
@@ -36,6 +37,7 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Locale;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import ru.miacomsoft.live360viewer.decoder.H264Decoder;
@@ -50,6 +52,7 @@ public class ViewerActivity extends AppCompatActivity {
 
     private static final String TAG = "ViewerActivity";
     private static final int REQ_WRITE_STORAGE = 1001;
+    private static final String PHOTO_SUBDIR = "Live360Viewer";
 
     public static final String EXTRA_VIEW_MODE = "extra_view_mode";
 
@@ -75,7 +78,12 @@ public class ViewerActivity extends AppCompatActivity {
     private Surface surface;
     private float lastX, lastY;
 
-    private byte[] pendingPhotoJpeg;
+    /**
+     * ★ Очередь отложенных фото (только для Android < 10, когда нужно
+     *   разрешение WRITE_EXTERNAL_STORAGE). Очередь, а не одно поле —
+     *   чтобы не потерять фото при быстрых нажатиях до ответа на диалог.
+     */
+    private final ConcurrentLinkedQueue<byte[]> pendingPhotoQueue = new ConcurrentLinkedQueue<>();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -376,7 +384,24 @@ public class ViewerActivity extends AppCompatActivity {
 
         s.takePhoto(new LiveViewSession.PhotoListener() {
             @Override public void onPhotoReady(byte[] jpeg, long ts) {
-                Log.i(TAG, "photo: onPhotoReady size=" + jpeg.length);
+                Log.i(TAG, "photo: onPhotoReady size="
+                        + (jpeg == null ? "null" : jpeg.length));
+
+                // ★ Проверяем, что JPEG не пустой и начинается с SOI (FF D8).
+                //   Без этой проверки невалидные данные молча уходили в
+                //   savePhotoQ/savePhotoLegacy, и пользователь видел
+                //   "Saved", но файл в галерее отсутствовал.
+                if (jpeg == null || jpeg.length < 4
+                        || (jpeg[0] & 0xFF) != 0xFF || (jpeg[1] & 0xFF) != 0xD8) {
+                    final int len = (jpeg == null ? 0 : jpeg.length);
+                    runOnUiThread(() -> {
+                        btnPhoto.setEnabled(true);
+                        overlay.setText("Photo err: invalid JPEG (" + len + " bytes)");
+                        Toast.makeText(ViewerActivity.this,
+                                "Камера вернула невалидный JPEG", Toast.LENGTH_LONG).show();
+                    });
+                    return;
+                }
                 runOnUiThread(() -> {
                     btnPhoto.setEnabled(true);
                     savePhotoWithPermission(jpeg);
@@ -387,19 +412,31 @@ public class ViewerActivity extends AppCompatActivity {
                 runOnUiThread(() -> {
                     btnPhoto.setEnabled(true);
                     overlay.setText("Photo err: " + msg);
+                    Toast.makeText(ViewerActivity.this,
+                            "Ошибка фото: " + msg, Toast.LENGTH_LONG).show();
                 });
             }
         });
     }
 
     private void savePhotoWithPermission(byte[] jpeg) {
+        if (jpeg == null || jpeg.length == 0) {
+            overlay.setText("Save failed: empty JPEG");
+            Toast.makeText(this, "Пустой JPEG — сохранять нечего",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Android 10+ — MediaStore, разрешения не нужны
             savePhotoQ(jpeg);
             return;
         }
+
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
                 != PackageManager.PERMISSION_GRANTED) {
-            pendingPhotoJpeg = jpeg;
+            // ★ Очередь, а не одно поле — не теряем фото при быстрых нажатиях
+            pendingPhotoQueue.offer(jpeg);
             ActivityCompat.requestPermissions(this,
                     new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE},
                     REQ_WRITE_STORAGE);
@@ -408,52 +445,109 @@ public class ViewerActivity extends AppCompatActivity {
         savePhotoLegacy(jpeg);
     }
 
+    /**
+     * Android 10+ (Q). Единственный путь, который на 100% работает без
+     * WRITE_EXTERNAL_STORAGE и сразу виден в галерее:
+     *
+     *   1) insert() с IS_PENDING=1 — файл создаётся, но скрыт от других приложений;
+     *   2) openOutputStream() → write → flush → close;
+     *   3) update(IS_PENDING=0) — файл «публикуется», медиа-сканер видит его
+     *      автоматически, галерея/Photos подхватывают без перезагрузки.
+     *
+     * Если на шаге 2/3 что-то падает — удаляем «висящую» запись через
+     * delete(uri, null, null), чтобы не оставлять мусор в MediaStore.
+     */
     private void savePhotoQ(byte[] jpeg) {
         String name = "LIVE360_"
-                + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date())
+                + new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date())
                 + ".jpg";
+
         ContentValues cv = new ContentValues();
         cv.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
         cv.put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg");
         cv.put(MediaStore.MediaColumns.RELATIVE_PATH,
-                Environment.DIRECTORY_PICTURES + "/Live360Viewer");
-        Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cv);
-        if (uri == null) {
-            overlay.setText("Save failed: uri null");
-            return;
-        }
-        try (OutputStream os = getContentResolver().openOutputStream(uri)) {
-            if (os == null) throw new IOException("openOutputStream null");
-            os.write(jpeg);
-            os.flush();
+                Environment.DIRECTORY_PICTURES + "/" + PHOTO_SUBDIR);
+        cv.put(MediaStore.MediaColumns.IS_PENDING, 1);   // ★ ключевой момент
+
+        Uri uri = null;
+        try {
+            uri = getContentResolver().insert(
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cv);
+            if (uri == null) {
+                throw new IOException("insert() returned null");
+            }
+
+            try (OutputStream os = getContentResolver().openOutputStream(uri)) {
+                if (os == null) throw new IOException("openOutputStream() returned null");
+                os.write(jpeg);
+                os.flush();
+            }
+
+            // Публикуем — теперь файл виден всем
+            ContentValues publish = new ContentValues();
+            publish.put(MediaStore.MediaColumns.IS_PENDING, 0);
+            getContentResolver().update(uri, publish, null, null);
+
+            Log.i(TAG, "savePhotoQ: saved " + jpeg.length + " bytes → " + uri);
             overlay.setText("Saved: " + name);
             Toast.makeText(this, "Фото сохранено: " + name, Toast.LENGTH_LONG).show();
-        } catch (IOException e) {
-            Log.e(TAG, "savePhotoQ: " + e.getMessage(), e);
+
+        } catch (Exception e) {
+            Log.e(TAG, "savePhotoQ failed: " + e.getMessage(), e);
+            // Удаляем «висящую» PENDING-запись, иначе MediaStore засорится
+            if (uri != null) {
+                try { getContentResolver().delete(uri, null, null); }
+                catch (Exception ignored) {}
+            }
             overlay.setText("Save failed: " + e.getMessage());
+            Toast.makeText(this, "Не удалось сохранить фото: " + e.getMessage(),
+                    Toast.LENGTH_LONG).show();
         }
     }
 
+    /**
+     * Android 9 и ниже. После записи в файл обязательно вызываем
+     * MediaScannerConnection.scanFile(), иначе галерея не увидит файл
+     * до перезагрузки/подключения к ПК — именно этого не хватало
+     * в исходной реализации.
+     */
     private void savePhotoLegacy(byte[] jpeg) {
         File dir = new File(Environment.getExternalStoragePublicDirectory(
-                Environment.DIRECTORY_PICTURES), "Live360Viewer");
+                Environment.DIRECTORY_PICTURES), PHOTO_SUBDIR);
         if (!dir.exists() && !dir.mkdirs()) {
-            overlay.setText("Save failed: mkdirs");
+            Log.e(TAG, "savePhotoLegacy: mkdirs failed: " + dir);
+            overlay.setText("Save failed: cannot create " + dir);
+            Toast.makeText(this, "Не удалось создать папку " + dir,
+                    Toast.LENGTH_LONG).show();
             return;
         }
+
         String name = "LIVE360_"
-                + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date())
+                + new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date())
                 + ".jpg";
-        File f = new File(dir, name);
+        final File f = new File(dir, name);
+
         try (FileOutputStream fos = new FileOutputStream(f)) {
             fos.write(jpeg);
             fos.flush();
-            overlay.setText("Saved: " + f.getAbsolutePath());
-            Toast.makeText(this, "Фото: " + f.getAbsolutePath(), Toast.LENGTH_LONG).show();
         } catch (IOException e) {
-            Log.e(TAG, "savePhotoLegacy: " + e.getMessage(), e);
+            Log.e(TAG, "savePhotoLegacy write failed: " + e.getMessage(), e);
             overlay.setText("Save failed: " + e.getMessage());
+            Toast.makeText(this, "Не удалось сохранить: " + e.getMessage(),
+                    Toast.LENGTH_LONG).show();
+            return;
         }
+
+        // ★ Ключевой момент: без scanFile галерея файл не увидит
+        MediaScannerConnection.scanFile(
+                this,
+                new String[]{f.getAbsolutePath()},
+                new String[]{"image/jpeg"},
+                (path, uri) -> Log.i(TAG, "scanFile: " + path + " → " + uri));
+
+        Log.i(TAG, "savePhotoLegacy: saved " + jpeg.length + " bytes → " + f);
+        overlay.setText("Saved: " + f.getAbsolutePath());
+        Toast.makeText(this, "Фото: " + f.getAbsolutePath(), Toast.LENGTH_LONG).show();
     }
 
     @Override
@@ -461,15 +555,29 @@ public class ViewerActivity extends AppCompatActivity {
                                            @NonNull int[] res) {
         super.onRequestPermissionsResult(req, perms, res);
         if (req != REQ_WRITE_STORAGE) return;
-        if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED
-                && pendingPhotoJpeg != null) {
-            byte[] j = pendingPhotoJpeg;
-            pendingPhotoJpeg = null;
-            savePhotoLegacy(j);
-        } else {
-            pendingPhotoJpeg = null;
-            Toast.makeText(this, "Без разрешения фото не сохранить",
+
+        boolean granted = res.length > 0
+                && res[0] == PackageManager.PERMISSION_GRANTED;
+
+        if (!granted) {
+            int dropped = pendingPhotoQueue.size();
+            pendingPhotoQueue.clear();
+            Toast.makeText(this,
+                    "Без разрешения фото не сохранить"
+                            + (dropped > 0 ? " (" + dropped + " потеряно)" : ""),
                     Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        // Сохраняем все накопившиеся фото
+        byte[] j;
+        int saved = 0;
+        while ((j = pendingPhotoQueue.poll()) != null) {
+            savePhotoLegacy(j);
+            saved++;
+        }
+        if (saved > 1) {
+            Toast.makeText(this, "Сохранено фото: " + saved, Toast.LENGTH_SHORT).show();
         }
     }
 }
