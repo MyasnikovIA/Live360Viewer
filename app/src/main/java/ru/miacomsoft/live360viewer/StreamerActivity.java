@@ -1,45 +1,41 @@
 package ru.miacomsoft.live360viewer;
 
 import android.Manifest;
+import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.pm.PackageManager;
-import android.hardware.usb.UsbDevice;
-import android.hardware.usb.UsbDeviceConnection;
-import android.hardware.usb.UsbEndpoint;
-import android.hardware.usb.UsbInterface;
-import android.hardware.usb.UsbManager;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.Surface;
 import android.widget.Button;
 import android.widget.TextView;
+import android.widget.Toast;
 
-import androidx.annotation.NonNull;
-import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
-import java.util.HashMap;
-
-import ru.miacomsoft.live360viewer.audio.AudioStreamSource;
 import ru.miacomsoft.live360viewer.decoder.H264Decoder;
 import ru.miacomsoft.live360viewer.settings.PhotoSettings;
 import ru.miacomsoft.live360viewer.stream.WebRtcClient;
 import ru.miacomsoft.live360viewer.usb.LiveViewSession;
-import ru.miacomsoft.live360viewer.usb.ScsiConstants;
 import ru.miacomsoft.live360viewer.usb.UsbCameraManager;
 
-public class StreamerActivity extends AppCompatActivity {
+public class StreamerActivity extends Activity {
+
     private static final String TAG = "StreamerActivity";
-    private static final int REQ_RECORD_AUDIO = 2001;
+    private static final int REQ_RECORD_AUDIO = 1001;
+    private static final int SIGNALING_PORT = 9090;
 
-    private TextView tvStatus, tvLog;
+    private TextView tvStatus;
+    private Button btnChangeRes;
+    private Button btnStop;
+
     private WebRtcClient webRtcClient;
-    private H264Decoder decoder;
-    private UsbCameraManager usb;
-    private LiveViewSession session;
-    private Surface webRtcSurface;
+    private UsbCameraManager usbManager;
+    private LiveViewSession liveViewSession;
+    private H264Decoder h264Decoder;
 
-    private volatile boolean streaming = false;
+    private boolean pendingStart = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -47,92 +43,159 @@ public class StreamerActivity extends AppCompatActivity {
         setContentView(R.layout.activity_streamer);
 
         tvStatus = findViewById(R.id.tvStatus);
-        tvLog = findViewById(R.id.tvLog);
-        Button btnStop = findViewById(R.id.btnStop);
+        btnChangeRes = findViewById(R.id.btnChangeRes);
+        btnStop = findViewById(R.id.btnStop);
 
-        btnStop.setOnClickListener(v -> finish());
+        btnChangeRes.setOnClickListener(v -> showResolutionDialog());
+        btnStop.setOnClickListener(v -> {
+            finish(); // Закрываем Activity. Ресурсы освободятся в onDestroy()
+        });
 
-        ensurePermissions();
-        startWebRTC();
-    }
-
-    private void ensurePermissions() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.RECORD_AUDIO}, REQ_RECORD_AUDIO);
+        if (!hasRecordAudioPermission()) {
+            tvStatus.setText("Требуется разрешение на микрофон…");
+            requestRecordAudioPermission();
+        } else {
+            startStreaming();
         }
     }
 
-    private void startWebRTC() {
-        // Используем 8888 порт для WebSocket
-        webRtcClient = new WebRtcClient(this, 9090);
+    private boolean hasRecordAudioPermission() {
+        return ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void requestRecordAudioPermission() {
+        pendingStart = true;
+        ActivityCompat.requestPermissions(this,
+                new String[]{Manifest.permission.RECORD_AUDIO},
+                REQ_RECORD_AUDIO);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQ_RECORD_AUDIO) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, "Разрешение на микрофон выдано", Toast.LENGTH_SHORT).show();
+            } else {
+                tvStatus.setText("Разрешение на микрофон отклонено. Звук не будет работать.");
+            }
+            if (pendingStart) {
+                pendingStart = false;
+                startStreaming();
+            }
+        }
+    }
+
+    private void startStreaming() {
+        webRtcClient = new WebRtcClient(this, SIGNALING_PORT);
         webRtcClient.start();
 
-        // Получаем Surface от WebRTC для декодера
-        webRtcSurface = webRtcClient.getCaptureSurface();
-
-        tvStatus.setText("Ожидание WebRTC клиента на 9090");
-        log("WebRTC Started. Open HTML page.");
-
-        startCamera();
-    }
-
-    private void startCamera() {
-        UsbManager mgr = (UsbManager) getSystemService(USB_SERVICE);
-        UsbDevice cam = findCamera(mgr);
-        if (cam == null) { log("Camera not found"); return; }
-
-        streaming = true;
-        final int photoRes = PhotoSettings.getResolution(this);
-        final int videoRes = PhotoSettings.getVideoResolution(this);
-
-        decoder = new H264Decoder(webRtcSurface, 1280, 640);
+        Surface surface = webRtcClient.getCaptureSurface();
+        h264Decoder = new H264Decoder(surface, 1280, 640);
         try {
-            decoder.start();
+            h264Decoder.start();
+            Log.i(TAG, "H264Decoder started successfully");
         } catch (Exception e) {
-            log("Decoder start failed: " + e.getMessage());
-            return;
+            Log.e(TAG, "Failed to start H264Decoder", e);
+            tvStatus.setText("Ошибка декодера: " + e.getMessage());
         }
 
-        usb = new UsbCameraManager(this);
-        usb.start(new UsbCameraManager.Listener() {
-            @Override public void onConnected(UsbDeviceConnection conn, UsbInterface intf, UsbEndpoint in, UsbEndpoint out) {
-                session = new LiveViewSession(conn, in, out, photoRes, videoRes,
+        tvStatus.setText("WebRTC сервер запущен на порту " + SIGNALING_PORT);
+
+        usbManager = new UsbCameraManager(this);
+        usbManager.start(new UsbCameraManager.Listener() {
+            @Override
+            public void onConnected(android.hardware.usb.UsbDeviceConnection conn,
+                                    android.hardware.usb.UsbInterface intf,
+                                    android.hardware.usb.UsbEndpoint epIn,
+                                    android.hardware.usb.UsbEndpoint epOut) {
+                liveViewSession = new LiveViewSession(conn, epIn, epOut, 0x03, 0x0A,
                         new LiveViewSession.FrameListener() {
-                            @Override public void onVideoFrame(byte[] h264, long ptsUs) {
-                                if (decoder != null) decoder.feed(h264, ptsUs);
+                            @Override
+                            public void onVideoFrame(byte[] h264, long ptsUs) {
+                                if (h264Decoder != null) {
+                                    h264Decoder.feed(h264, ptsUs);
+                                }
                             }
-                            @Override public void onError(String msg) { Log.e(TAG, "LiveView: " + msg); }
+                            @Override
+                            public void onError(String msg) {
+                                runOnUiThread(() -> tvStatus.setText("Ошибка камеры: " + msg));
+                            }
                         });
-                new Thread(() -> {
-                    boolean ok = session.start();
-                    runOnUiThread(() -> log(ok ? "Camera streaming to WebRTC" : "Camera failed"));
-                }, "LV-start").start();
+                liveViewSession.start();
             }
-            @Override public void onDetached() { streaming = false; }
-            @Override public void onPermissionDenied() { streaming = false; }
-            @Override public void onError(String msg) { streaming = false; }
+
+            @Override public void onDetached() {}
+            @Override public void onPermissionDenied() {
+                runOnUiThread(() -> Toast.makeText(StreamerActivity.this, "Нет прав USB", Toast.LENGTH_SHORT).show());
+            }
+            @Override public void onError(String msg) {
+                runOnUiThread(() -> tvStatus.setText("Ошибка USB: " + msg));
+            }
         });
     }
 
-    private UsbDevice findCamera(UsbManager mgr) {
-        HashMap<String, UsbDevice> list = mgr.getDeviceList();
-        for (UsbDevice d : list.values()) {
-            if (d.getVendorId() == ScsiConstants.VENDOR_ID && d.getProductId() == ScsiConstants.PRODUCT_ID) return d;
+    private void showResolutionDialog() {
+        if (liveViewSession == null) {
+            Toast.makeText(this, "Камера еще не запущена", Toast.LENGTH_SHORT).show();
+            return;
         }
-        return null;
+
+        int[] videoCodes = PhotoSettings.allVideoCodes();
+        String[] labels = new String[videoCodes.length];
+        for (int i = 0; i < videoCodes.length; i++) {
+            labels[i] = PhotoSettings.labelVideo(videoCodes[i]);
+        }
+
+        new AlertDialog.Builder(this)
+                .setTitle("Выберите разрешение")
+                .setItems(labels, (dialog, which) -> changeVideoResolution(videoCodes[which]))
+                .show();
+    }
+
+    private void changeVideoResolution(int videoResCode) {
+        int width, height;
+        switch (videoResCode) {
+            case PhotoSettings.VIDEO_RES_640x320:  width = 640;  height = 320;  break;
+            case PhotoSettings.VIDEO_RES_960x480:  width = 960;  height = 480;  break;
+            case PhotoSettings.VIDEO_RES_1024x512: width = 1024; height = 512;  break;
+            case PhotoSettings.VIDEO_RES_1280x640: width = 1280; height = 640;  break;
+            case PhotoSettings.VIDEO_RES_1920x960: width = 1920; height = 960;  break;
+            default: width = 1280; height = 640; break;
+        }
+
+        Log.i(TAG, "Changing resolution to " + width + "x" + height);
+
+        if (liveViewSession != null) {
+            new Thread(() -> liveViewSession.changeVideoRes(videoResCode)).start();
+        }
+        if (webRtcClient != null) {
+            webRtcClient.updateVideoResolution(width, height);
+        }
+
+        tvStatus.setText("Разрешение изменено на " + width + "x" + height);
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (session != null) session.stop();
-        if (usb != null) usb.stop();
-        if (decoder != null) decoder.stop();
-        if (webRtcSurface != null) webRtcSurface.release();
-    }
-
-    private void log(String s) {
-        Log.d(TAG, s);
-        runOnUiThread(() -> { tvLog.append(s); tvLog.append("\n"); });
+        Log.i(TAG, "onDestroy: releasing all resources");
+        if (liveViewSession != null) {
+            liveViewSession.stop();
+            liveViewSession = null;
+        }
+        if (h264Decoder != null) {
+            h264Decoder.stop();
+            h264Decoder = null;
+        }
+        if (usbManager != null) {
+            usbManager.stop();
+            usbManager = null;
+        }
+        if (webRtcClient != null) {
+            webRtcClient.stop();
+            webRtcClient = null;
+        }
     }
 }

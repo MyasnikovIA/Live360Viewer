@@ -18,22 +18,26 @@
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Подключитесь по TCP и получите поток H.264 (Annex-B).\n\nПримеры:\n  ffplay tcp://IP:PORT\n  nc IP PORT &gt; stream.h264"
+        android:text="Подключитесь по WebRTC через браузер."
         android:textColor="#AAAAAA"
         android:textSize="12sp"
         android:fontFamily="monospace"
         android:paddingBottom="16dp"/>
 
-    <Button
-        android:id="@+id/btnStop"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Остановить"/>
+    <!-- ★ Новая кнопка для смены разрешения -->
     <Button
         android:id="@+id/btnChangeRes"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Video res…" />
+        android:text="Изменить разрешение видео" />
+
+    <Button
+        android:id="@+id/btnStop"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Остановить"/>
+
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="0dp"
