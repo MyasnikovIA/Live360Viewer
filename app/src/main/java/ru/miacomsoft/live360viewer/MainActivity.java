@@ -118,7 +118,6 @@ public class MainActivity extends AppCompatActivity {
         btnStartStream.setOnClickListener(v -> {
             log("Opening STREAMER (raw H.264 over TCP server)");
             Intent i = new Intent(this, StreamerActivity.class);
-            i.putExtra(StreamerActivity.EXTRA_PORT, StreamerActivity.DEFAULT_PORT);
             startActivity(i);
         });
 

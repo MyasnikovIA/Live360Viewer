@@ -30,4 +30,8 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.9.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+    // WebRTC для Android
+    implementation 'io.github.webrtc-sdk:android:125.6422.07'
+    // WebSocket сервер для обмена SDP (сигналинг)
+    implementation 'org.java-websocket:Java-WebSocket:1.5.3'
 }
