@@ -36,7 +36,6 @@ public class MainActivity extends AppCompatActivity {
     private PendingIntent permIntent;
     private boolean isReceiverRegistered = false;
 
-    // ★ Ресивер для получения результата запроса разрешения USB
     private final BroadcastReceiver usbReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -67,16 +66,15 @@ public class MainActivity extends AppCompatActivity {
         Button btnConnect     = findViewById(R.id.btnConnect);
         Button btnStartSphere = findViewById(R.id.btnStartSphere);
         Button btnStartFlat   = findViewById(R.id.btnStartFlat);
+        Button btnStartStream = findViewById(R.id.btnStartStream);
         Button btnStop        = findViewById(R.id.btnStop);
 
         setupPhotoResSpinner();
 
-        // ★ Инициализация PendingIntent для запроса разрешений USB
         int flags = PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT;
         permIntent = PendingIntent.getBroadcast(this, 0,
                 new Intent(ACTION_USB_PERMISSION).setPackage(getPackageName()), flags);
 
-        // ★ Регистрация ресивера с учетом требований Android 13+
         IntentFilter filter = new IntentFilter(ACTION_USB_PERMISSION);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
@@ -91,7 +89,6 @@ public class MainActivity extends AppCompatActivity {
             checkCameraPresence();
         });
 
-        // ★ Запуск просмотра сферы
         btnStartSphere.setOnClickListener(v -> {
             int photoRes = PhotoSettings.getResolution(this);
             PhotoSettings.setViewMode(this, PhotoSettings.VIEW_MODE_SPHERE);
@@ -101,13 +98,20 @@ public class MainActivity extends AppCompatActivity {
             startActivity(i);
         });
 
-        // ★ Запуск плоской 360-панорамы
         btnStartFlat.setOnClickListener(v -> {
             int photoRes = PhotoSettings.getResolution(this);
             PhotoSettings.setViewMode(this, PhotoSettings.VIEW_MODE_FLAT);
             log("Opening FLAT viewer (photo_res=0x" + Integer.toHexString(photoRes) + ")");
             Intent i = new Intent(this, ViewerActivity.class);
             i.putExtra(ViewerActivity.EXTRA_VIEW_MODE, PhotoSettings.VIEW_MODE_FLAT);
+            startActivity(i);
+        });
+
+        // ★ Запуск сетевой трансляции
+        btnStartStream.setOnClickListener(v -> {
+            log("Opening STREAMER (raw H.264 over TCP)");
+            Intent i = new Intent(this, StreamerActivity.class);
+            i.putExtra(StreamerActivity.EXTRA_PORT, StreamerActivity.DEFAULT_PORT);
             startActivity(i);
         });
 
@@ -159,7 +163,6 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    // ★ ИСПРАВЛЕНИЕ: Перенесено в фоновый поток и добавлен запрос разрешения
     private void checkCameraPresence() {
         new Thread(() -> {
             UsbManager mgr = (UsbManager) getSystemService(USB_SERVICE);
@@ -192,7 +195,6 @@ public class MainActivity extends AppCompatActivity {
 
             final UsbDevice finalFound = found;
             if (!mgr.hasPermission(finalFound)) {
-                // ★ Запрашиваем разрешение у пользователя
                 runOnUiThread(() -> {
                     log("Camera found, hasPermission=false. Requesting permission...");
                     tvStatus.setText("Requesting USB permission...");

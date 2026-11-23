@@ -4,7 +4,12 @@
     <!-- USB host (внешняя USB-камера) -->
     <uses-feature android:name="android.hardware.usb.host" android:required="true"/>
 
-    <!-- Запись в галерею на Android < 10 (scoped storage не действует) -->
+    <!-- ★ TCP-сервер трансляции -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Для отображения IP-адреса в UI (опционально, но полезно) -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+
+    <!-- Запись в галерею на Android < 10 -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28"/>
 
@@ -27,6 +32,13 @@
             android:name=".ViewerActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:screenOrientation="landscape"
+            android:exported="false" />
+
+        <!-- ★ Экран трансляции по сети -->
+        <activity
+            android:name=".StreamerActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:screenOrientation="portrait"
             android:exported="false" />
     </application>
 
