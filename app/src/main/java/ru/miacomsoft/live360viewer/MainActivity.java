@@ -1,8 +1,13 @@
 package ru.miacomsoft.live360viewer;
 
+import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.View;
@@ -23,9 +28,35 @@ import ru.miacomsoft.live360viewer.usb.ScsiConstants;
 public class MainActivity extends AppCompatActivity {
 
     private static final String TAG = "MainActivity";
+    private static final String ACTION_USB_PERMISSION = "ru.miacomsoft.live360viewer.USB_PERMISSION";
 
     private TextView tvStatus, tvLog;
-    private Spinner spPhotoRes;
+    private Spinner spPhotoRes, spVideoRes;
+
+    private PendingIntent permIntent;
+    private boolean isReceiverRegistered = false;
+
+    // ★ Ресивер для получения результата запроса разрешения USB
+    private final BroadcastReceiver usbReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String action = intent.getAction();
+            if (ACTION_USB_PERMISSION.equals(action)) {
+                synchronized (this) {
+                    UsbDevice device = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
+                    if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
+                        if (device != null) {
+                            log("USB permission GRANTED for device: " + device.getDeviceName());
+                            tvStatus.setText("Camera detected and permitted. Tap Start");
+                        }
+                    } else {
+                        log("USB permission DENIED by user");
+                        tvStatus.setText("USB permission denied");
+                    }
+                }
+            }
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -35,12 +66,28 @@ public class MainActivity extends AppCompatActivity {
         tvStatus    = findViewById(R.id.tvStatus);
         tvLog       = findViewById(R.id.tvLog);
         spPhotoRes  = findViewById(R.id.spPhotoRes);
+        spVideoRes  = findViewById(R.id.spVideoRes);
         Button btnConnect     = findViewById(R.id.btnConnect);
         Button btnStartSphere = findViewById(R.id.btnStartSphere);
         Button btnStartFlat   = findViewById(R.id.btnStartFlat);
         Button btnStop        = findViewById(R.id.btnStop);
 
         setupPhotoResSpinner();
+        setupVideoResSpinner();
+
+        // Инициализация PendingIntent для запроса разрешений USB
+        int flags = PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT;
+        permIntent = PendingIntent.getBroadcast(this, 0,
+                new Intent(ACTION_USB_PERMISSION).setPackage(getPackageName()), flags);
+
+        // Регистрация ресивера
+        IntentFilter filter = new IntentFilter(ACTION_USB_PERMISSION);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(usbReceiver, filter);
+        }
+        isReceiverRegistered = true;
 
         btnConnect.setOnClickListener(v -> {
             log("Check camera");
@@ -48,7 +95,6 @@ public class MainActivity extends AppCompatActivity {
             checkCameraPresence();
         });
 
-        // ★ Запуск просмотра сферы
         btnStartSphere.setOnClickListener(v -> {
             int photoRes = PhotoSettings.getResolution(this);
             PhotoSettings.setViewMode(this, PhotoSettings.VIEW_MODE_SPHERE);
@@ -58,7 +104,6 @@ public class MainActivity extends AppCompatActivity {
             startActivity(i);
         });
 
-        // ★ Запуск плоской 360-панорамы
         btnStartFlat.setOnClickListener(v -> {
             int photoRes = PhotoSettings.getResolution(this);
             PhotoSettings.setViewMode(this, PhotoSettings.VIEW_MODE_FLAT);
@@ -72,6 +117,15 @@ public class MainActivity extends AppCompatActivity {
             log("Stop");
             tvStatus.setText(R.string.status_idle);
         });
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (isReceiverRegistered) {
+            unregisterReceiver(usbReceiver);
+            isReceiverRegistered = false;
+        }
     }
 
     private void setupPhotoResSpinner() {
@@ -95,15 +149,42 @@ public class MainActivity extends AppCompatActivity {
                 int code = codes[pos];
                 int prev = PhotoSettings.getResolution(MainActivity.this);
                 PhotoSettings.setResolution(MainActivity.this, code);
-                log("Photo resolution → " + PhotoSettings.label(code)
-                        + " (0x" + Integer.toHexString(code) + ")");
+                log("Photo resolution → " + PhotoSettings.label(code));
                 if (prev != code) {
-                    Toast.makeText(MainActivity.this,
-                            "Применится при следующем запуске трансляции",
-                            Toast.LENGTH_SHORT).show();
+                    Toast.makeText(MainActivity.this, "Применится при следующем запуске", Toast.LENGTH_SHORT).show();
                 }
             }
-            @Override public void onNothingSelected(AdapterView<?> parent) { /* no-op */ }
+            @Override public void onNothingSelected(AdapterView<?> parent) { }
+        });
+    }
+
+    private void setupVideoResSpinner() {
+        final int[] codes = PhotoSettings.allVideoCodes();
+        String[] labels = new String[codes.length];
+        for (int i = 0; i < codes.length; i++) labels[i] = PhotoSettings.labelVideoRes(codes[i]);
+
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this,
+                android.R.layout.simple_spinner_item, labels);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spVideoRes.setAdapter(adapter);
+
+        int saved = PhotoSettings.getVideoResolution(this);
+        for (int i = 0; i < codes.length; i++) {
+            if (codes[i] == saved) { spVideoRes.setSelection(i); break; }
+        }
+
+        spVideoRes.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int pos, long id) {
+                int code = codes[pos];
+                int prev = PhotoSettings.getVideoResolution(MainActivity.this);
+                PhotoSettings.setVideoResolution(MainActivity.this, code);
+                log("Preview resolution → " + PhotoSettings.labelVideoRes(code));
+                if (prev != code) {
+                    Toast.makeText(MainActivity.this, "Применится при следующем запуске", Toast.LENGTH_SHORT).show();
+                }
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) { }
         });
     }
 
@@ -114,7 +195,6 @@ public class MainActivity extends AppCompatActivity {
         HashMap<String, UsbDevice> list = mgr.getDeviceList();
         UsbDevice found = null;
         for (UsbDevice d : list.values()) {
-            Log.d(TAG, "USB vid=" + d.getVendorId() + " pid=" + d.getProductId());
             if (d.getVendorId() == ScsiConstants.VENDOR_ID
                     && d.getProductId() == ScsiConstants.PRODUCT_ID) { found = d; break; }
         }
@@ -123,8 +203,16 @@ public class MainActivity extends AppCompatActivity {
             tvStatus.setText(R.string.status_idle);
             return;
         }
-        log("Camera found, hasPermission=" + mgr.hasPermission(found));
-        tvStatus.setText("Camera detected. Tap Start");
+
+        // ★ Проверка и запрос разрешения
+        if (!mgr.hasPermission(found)) {
+            log("Camera found, hasPermission=false. Requesting permission...");
+            tvStatus.setText("Requesting USB permission...");
+            mgr.requestPermission(found, permIntent);
+        } else {
+            log("Camera found, hasPermission=true");
+            tvStatus.setText("Camera detected. Tap Start");
+        }
     }
 
     private void log(String s) {
