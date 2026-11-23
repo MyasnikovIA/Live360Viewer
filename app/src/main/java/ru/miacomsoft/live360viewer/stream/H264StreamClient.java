@@ -4,25 +4,18 @@ import android.util.Log;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.net.ConnectException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * TCP-клиент, отправляющий «сырой» H.264 (Annex-B) на удалённый сервер.
- *
- * На проводе — чистый Annex-B поток без обрамления.
- * Камера стартует ТОЛЬКО после успешного подключения, поэтому сервер
- * получает поток с самого начала (SPS+PPS+IDR), без потерь keyframe.
- *
- * Тест на PC (Linux/Mac):
- *   nc -l -p 8888 | vlc --demux=h264 -
- *   nc -l -p 8888 | ffplay -f h264 -
- */
 public class H264StreamClient {
 
     private static final String TAG = "H264StreamClient";
-    private static final int CONNECT_TIMEOUT_MS = 5000;
+    // Увеличим таймаут до 7 секунд, чтобы дать сети больше времени
+    private static final int CONNECT_TIMEOUT_MS = 7000;
 
     public interface Listener {
         void onConnecting(String host, int port);
@@ -61,13 +54,16 @@ public class H264StreamClient {
     }
 
     private void connectLoop() {
+        long startTime = System.currentTimeMillis();
         try {
             Socket s = new Socket();
             if (listener != null) listener.onConnecting(host, port);
-            Log.i(TAG, "connecting to " + host + ":" + port);
+            Log.i(TAG, "Начинаем подключение к " + host + ":" + port);
+
             s.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MS);
             s.setTcpNoDelay(true);
             s.setKeepAlive(true);
+
             synchronized (writeLock) {
                 socket = s;
                 out = s.getOutputStream();
@@ -75,17 +71,35 @@ public class H264StreamClient {
             framesSent = 0;
             bytesSent = 0;
             connected.set(true);
-            Log.i(TAG, "connected to " + host + ":" + port);
+            long timeTaken = System.currentTimeMillis() - startTime;
+            Log.i(TAG, "Успешно подключено за " + timeTaken + " мс");
             if (listener != null) listener.onConnected(host + ":" + port);
+
+        } catch (SocketTimeoutException e) {
+            String msg = "Таймаут (" + (System.currentTimeMillis() - startTime) + " мс). Пакеты блокируются (Фаервол/Антивирус/Роутер).";
+            Log.e(TAG, msg);
+            handleError(msg);
+        } catch (ConnectException e) {
+            String msg = "Соединение отклонено. Сервер не запущен или порт закрыт.";
+            Log.e(TAG, msg);
+            handleError(msg);
+        } catch (UnknownHostException e) {
+            String msg = "Неизвестный хост. Проверьте правильность ввода IP-адреса.";
+            Log.e(TAG, msg);
+            handleError(msg);
         } catch (IOException e) {
-            Log.e(TAG, "connect failed: " + e.getMessage());
-            connected.set(false);
-            running.set(false);
-            if (listener != null) listener.onError("connect: " + e.getMessage());
+            String msg = "Ошибка ввода-вывода: " + e.getMessage();
+            Log.e(TAG, msg, e);
+            handleError(msg);
         }
     }
 
-    /** Отправляет один кадр (Annex-B) серверу. Если соединения нет — сразу возвращается. */
+    private void handleError(String message) {
+        connected.set(false);
+        running.set(false);
+        if (listener != null) listener.onError(message);
+    }
+
     public void sendFrame(byte[] annexB) {
         if (annexB == null || annexB.length == 0) return;
         if (!connected.get()) return;
@@ -98,7 +112,7 @@ public class H264StreamClient {
                 framesSent++;
                 bytesSent += annexB.length;
             } catch (IOException e) {
-                Log.w(TAG, "write failed: " + e.getMessage());
+                Log.w(TAG, "Ошибка отправки: " + e.getMessage());
                 disconnect("write: " + e.getMessage());
             }
         }
@@ -112,7 +126,7 @@ public class H264StreamClient {
             out = null;
             socket = null;
         }
-        Log.i(TAG, "disconnected: " + reason);
+        Log.i(TAG, "Отключено: " + reason);
         if (listener != null) listener.onDisconnected(reason);
     }
 

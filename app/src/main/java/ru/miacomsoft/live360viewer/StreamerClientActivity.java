@@ -1,12 +1,15 @@
 package ru.miacomsoft.live360viewer;
 
+import android.content.Context;
 import android.content.SharedPreferences;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbDeviceConnection;
 import android.hardware.usb.UsbEndpoint;
 import android.hardware.usb.UsbInterface;
 import android.hardware.usb.UsbManager;
+import android.net.wifi.WifiManager;
 import android.os.Bundle;
+import android.text.format.Formatter;
 import android.util.Log;
 import android.widget.Button;
 import android.widget.EditText;
@@ -23,17 +26,6 @@ import ru.miacomsoft.live360viewer.usb.LiveViewSession;
 import ru.miacomsoft.live360viewer.usb.ScsiConstants;
 import ru.miacomsoft.live360viewer.usb.UsbCameraManager;
 
-/**
- * Экран «Клиент»: приложение подключается к удалённому TCP-серверу
- * и отправляет туда сырой H.264 (Annex-B) с USB-камеры.
- *
- * Сценарий:
- *   1) Пользователь вводит host:port и жмёт «Начать трансляцию».
- *   2) Приложение подключается по TCP.
- *   3) После успешного подключения стартует камера.
- *   4) Кадры уходят в сокет без декодирования и без упаковки.
- *   5) При обрыве связи камера останавливается — можно нажать «Начать» снова.
- */
 public class StreamerClientActivity extends AppCompatActivity {
 
     private static final String TAG = "StreamerClient";
@@ -41,7 +33,7 @@ public class StreamerClientActivity extends AppCompatActivity {
     private static final String KEY_ADDR = "server_address";
 
     private EditText etAddress;
-    private TextView tvStatus, tvLog;
+    private TextView tvStatus, tvLog, tvNetworkInfo;
     private Button btnStart, btnStop;
 
     private H264StreamClient client;
@@ -60,15 +52,54 @@ public class StreamerClientActivity extends AppCompatActivity {
         btnStart  = findViewById(R.id.btnStart);
         btnStop   = findViewById(R.id.btnStop);
 
+        // Если вы добавили TextView в layout для инфы о сети:
+        // tvNetworkInfo = findViewById(R.id.tvNetworkInfo);
+
         SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
         etAddress.setText(sp.getString(KEY_ADDR, "192.168.1.100:8888"));
 
         btnStart.setOnClickListener(v -> startStreaming());
         btnStop.setOnClickListener(v -> stopStreaming());
         btnStop.setEnabled(false);
+
+        showNetworkInfo();
     }
 
-    // ============ Старт / стоп ============
+    private void showNetworkInfo() {
+        try {
+            WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wm != null && wm.isWifiEnabled()) {
+                String ip = Formatter.formatIpAddress(wm.getConnectionInfo().getIpAddress());
+                String ssid = wm.getConnectionInfo().getSSID();
+                String info = "Телефон IP: " + ip + " | Wi-Fi: " + ssid;
+                Log.i(TAG, "Сетевая информация: " + info);
+                // Если есть tvNetworkInfo, можно вывести туда:
+                // if (tvNetworkInfo != null) tvNetworkInfo.setText(info);
+                log(info);
+            } else {
+                log("Wi-Fi выключен или не подключен. IP: " + getLocalIpAddress());
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Ошибка получения сетевой инфы: " + e.getMessage());
+        }
+    }
+
+    private String getLocalIpAddress() {
+        try {
+            java.util.Enumeration<java.net.NetworkInterface> en = java.net.NetworkInterface.getNetworkInterfaces();
+            while (en.hasMoreElements()) {
+                java.net.NetworkInterface intf = en.nextElement();
+                java.util.Enumeration<java.net.InetAddress> enumIpAddr = intf.getInetAddresses();
+                while (enumIpAddr.hasMoreElements()) {
+                    java.net.InetAddress inetAddress = enumIpAddr.nextElement();
+                    if (!inetAddress.isLoopbackAddress() && inetAddress instanceof java.net.Inet4Address) {
+                        return inetAddress.getHostAddress();
+                    }
+                }
+            }
+        } catch (Exception ex) { }
+        return "Неизвестен";
+    }
 
     private void startStreaming() {
         String addr = etAddress.getText().toString().trim();
@@ -100,14 +131,14 @@ public class StreamerClientActivity extends AppCompatActivity {
             public void onConnecting(String h, int p) {
                 runOnUiThread(() -> {
                     tvStatus.setText("Подключение к " + h + ":" + p + "…");
-                    log("Connecting to " + h + ":" + p);
+                    log("Попытка подключения к " + h + ":" + p);
                 });
             }
             @Override
             public void onConnected(String remote) {
                 runOnUiThread(() -> {
                     tvStatus.setText("Подключено к " + remote + "\nЗапуск камеры…");
-                    log("Connected to " + remote);
+                    log("УСПЕХ: Подключено к " + remote);
                 });
                 startCamera();
             }
@@ -115,7 +146,7 @@ public class StreamerClientActivity extends AppCompatActivity {
             public void onDisconnected(String reason) {
                 runOnUiThread(() -> {
                     tvStatus.setText("Отключено: " + reason);
-                    log("Disconnected: " + reason);
+                    log("Отключено: " + reason);
                 });
                 stopCamera();
                 runOnUiThread(() -> {
@@ -128,7 +159,7 @@ public class StreamerClientActivity extends AppCompatActivity {
             public void onError(String msg) {
                 runOnUiThread(() -> {
                     tvStatus.setText("Ошибка: " + msg);
-                    log("Error: " + msg);
+                    log("ОШИБКА: " + msg);
                     btnStart.setEnabled(true);
                     btnStop.setEnabled(false);
                     etAddress.setEnabled(true);
@@ -149,11 +180,8 @@ public class StreamerClientActivity extends AppCompatActivity {
         tvStatus.setText("Остановлено");
     }
 
-    // ============ Камера ============
-
     private void startCamera() {
         if (streaming) return;
-
         UsbManager mgr = (UsbManager) getSystemService(USB_SERVICE);
         if (mgr == null) { kickClient("UsbManager unavailable"); return; }
         UsbDevice cam = findCamera(mgr);
@@ -161,7 +189,6 @@ public class StreamerClientActivity extends AppCompatActivity {
 
         streaming = true;
         final int photoRes = PhotoSettings.getResolution(this);
-        Log.i(TAG, "starting camera, photoRes=0x" + Integer.toHexString(photoRes));
 
         usb = new UsbCameraManager(this);
         usb.start(new UsbCameraManager.Listener() {
@@ -184,30 +211,27 @@ public class StreamerClientActivity extends AppCompatActivity {
                     runOnUiThread(() -> {
                         if (ok) {
                             tvStatus.setText("Трансляция активна");
-                            log("Streaming started");
+                            log("Камера запущена, идет отправка данных");
                         } else {
                             tvStatus.setText("Не удалось запустить камеру");
-                            log("LiveView start failed");
+                            log("Ошибка запуска камеры");
                             kickClient("LiveView start failed");
                         }
                     });
                 }, "LV-start").start();
             }
             @Override public void onDetached() {
-                log("Camera detached");
+                log("Камера отключена");
                 streaming = false;
                 kickClient("Camera detached");
             }
             @Override public void onPermissionDenied() {
-                log("USB permission denied");
+                log("Отказано в доступе к USB");
                 streaming = false;
                 kickClient("USB permission denied");
-                runOnUiThread(() ->
-                        Toast.makeText(StreamerClientActivity.this,
-                                "USB-разрешение отклонено", Toast.LENGTH_LONG).show());
             }
             @Override public void onError(String msg) {
-                log("USB: " + msg);
+                log("USB Ошибка: " + msg);
                 streaming = false;
                 kickClient("USB: " + msg);
             }
@@ -223,7 +247,6 @@ public class StreamerClientActivity extends AppCompatActivity {
     }
 
     private void kickClient(String reason) {
-        Log.w(TAG, "kick client: " + reason);
         H264StreamClient c = client;
         if (c != null) c.stop();
     }
