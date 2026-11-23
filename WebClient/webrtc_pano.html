@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Live360 WebRTC Panorama</title>
+    <!-- Подключаем стили Pannellum -->
+    <link rel="stylesheet" href="lib/Pannellum2_5_6/pannellum.css">
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background: #111;
+            overflow: hidden;
+            font-family: sans-serif;
+        }
+        #panorama {
+            width: 100%;
+            height: 100%;
+        }
+        /* Скрываем видео, так как Pannellum рисует его через WebGL */
+        #remoteVideo {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            opacity: 0;
+            pointer-events: none;
+            top: -10px;
+            left: -10px;
+        }
+        /* Кнопка для включения звука (обходим политику автовоспроизведения) */
+        #unmuteBtn {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 9999;
+            padding: 10px 20px;
+            font-size: 16px;
+            background: #6200EE;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            display: none;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        #unmuteBtn:hover {
+            background: #3700B3;
+        }
+        /* Статус подключения */
+        #status {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            z-index: 9999;
+            color: #4CAF50;
+            background: rgba(0,0,0,0.5);
+            padding: 10px;
+            border-radius: 5px;
+            font-weight: bold;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Контейнер для панорамы Pannellum -->
+    <div id="panorama"></div>
+    
+    <!-- Скрытый видеоплеер, куда приходит WebRTC поток -->
+    <video id="remoteVideo" autoplay playsinline muted></video>
+    
+    <!-- Кнопка для разблокировки звука -->
+    <button id="unmuteBtn">🔊 Включить звук</button>
+    
+    <!-- Статус -->
+    <div id="status">Подключение...</div>
+
+    <!-- ★ КРИТИЧЕСКИ ВАЖНО: Сначала подключаем WebGL движок libpannellum.js -->
+    <script src="lib/Pannellum2_5_6/libpannellum.js"></script>
+    <!-- Затем подключаем API pannellum.js -->
+    <script src="lib/Pannellum2_5_6/pannellum.js"></script>
+
+    <script>
+        // IP вашей приставки
+        const SIGNALING_URL = "ws://192.168.131.4:9090";
+        
+        const video = document.getElementById('remoteVideo');
+        const statusText = document.getElementById('status');
+        const unmuteBtn = document.getElementById('unmuteBtn');
+        
+        let pc = null;
+        let remoteStream = null;
+        let viewer = null; // Экземпляр Pannellum
+        let pannellumInitialized = false;
+
+        // Инициализация Pannellum при получении видеопотока
+        function initPannellum() {
+            if (pannellumInitialized) return;
+            pannellumInitialized = true;
+            
+            statusText.innerText = "Панорама загружена";
+            statusText.style.color = "#4CAF50";
+
+            // Передаем сам HTMLVideoElement в Pannellum как источник
+            viewer = pannellum.viewer('panorama', {
+                type: 'equirectangular',
+                panorama: video,       // <-- Передаем DOM-элемент видео
+                dynamic: true,         // <-- Обязательно для видео
+                dynamicUpdate: true,   // <-- Обновлять текстуру каждый кадр
+                autoLoad: true,
+                hfov: 100,
+                minHfov: 50,
+                maxHfov: 120,
+                showControls: true,
+                compass: true
+            });
+        }
+
+        function connect() {
+            const ws = new WebSocket(SIGNALING_URL);
+
+            ws.onopen = () => {
+                statusText.innerText = "Ожидание SDP Offer...";
+            };
+
+            ws.onmessage = async (msg) => {
+                const data = JSON.parse(msg.data);
+
+                if (data.type === 'offer') {
+                    statusText.innerText = "Получен Offer, создаем Answer...";
+
+                    if (!pc) {
+                        pc = new RTCPeerConnection({
+                            iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+                        });
+
+                        pc.ontrack = (event) => {
+                            console.log("Получен трек:", event.track.kind);
+                            if (!remoteStream) {
+                                remoteStream = event.streams[0];
+                                video.srcObject = remoteStream;
+                                
+                                // Пытаемся воспроизвести видео
+                                video.play().then(() => {
+                                    // Показываем кнопку, чтобы пользователь мог включить звук
+                                    unmuteBtn.style.display = "block";
+                                    
+                                    // Инициализируем Pannellum только после того, как видео пошло
+                                    initPannellum();
+                                }).catch(e => {
+                                    console.error("Ошибка воспроизведения:", e);
+                                    // Все равно пробуем инициализировать панораму
+                                    initPannellum();
+                                });
+                            }
+                        };
+
+                        pc.oniceconnectionstatechange = () => {
+                            console.log("ICE State:", pc.iceConnectionState);
+                            if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+                                statusText.innerText = "Соединение установлено, ждем видео...";
+                            } else if (pc.iceConnectionState === 'failed') {
+                                statusText.innerText = "Ошибка соединения ICE.";
+                                statusText.style.color = "red";
+                            }
+                        };
+
+                        pc.onicecandidate = (event) => {
+                            if (event.candidate) {
+                                ws.send(JSON.stringify({
+                                    type: 'candidate',
+                                    candidate: event.candidate
+                                }));
+                            }
+                        };
+                    }
+
+                    await pc.setRemoteDescription(new RTCSessionDescription(data));
+                    const answer = await pc.createAnswer();
+                    await pc.setLocalDescription(answer);
+
+                    ws.send(JSON.stringify({ type: 'answer', sdp: answer.sdp }));
+                } else if (data.type === 'candidate') {
+                    await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+                }
+            };
+
+            ws.onerror = () => {
+                statusText.innerText = "Ошибка WebSocket. Проверьте IP и порт.";
+                statusText.style.color = "red";
+            };
+        }
+
+        // Обработчик кнопки включения звука
+        unmuteBtn.addEventListener('click', () => {
+            video.muted = false;
+            video.volume = 1.0;
+            unmuteBtn.style.display = "none";
+            statusText.innerText = "Видео + звук воспроизводятся";
+        });
+
+        // Запускаем подключение
+        connect();
+    </script>
+</body>
+</html>
