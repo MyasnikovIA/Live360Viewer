@@ -1,15 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- USB host (внешняя USB-камера) -->
     <uses-feature android:name="android.hardware.usb.host" android:required="true"/>
 
-    <!-- ★ TCP-сервер трансляции -->
     <uses-permission android:name="android.permission.INTERNET"/>
-    <!-- Для отображения IP-адреса в UI (опционально, но полезно) -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
 
-    <!-- Запись в галерею на Android < 10 -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28"/>
 
@@ -34,9 +30,16 @@
             android:screenOrientation="landscape"
             android:exported="false" />
 
-        <!-- ★ Экран трансляции по сети -->
+        <!-- ★ Сервер (приём клиентов) -->
         <activity
             android:name=".StreamerActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:screenOrientation="portrait"
+            android:exported="false" />
+
+        <!-- ★ Клиент (отправка на удалённый сервер) -->
+        <activity
+            android:name=".StreamerClientActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:screenOrientation="portrait"
             android:exported="false" />

@@ -67,6 +67,7 @@ public class MainActivity extends AppCompatActivity {
         Button btnStartSphere = findViewById(R.id.btnStartSphere);
         Button btnStartFlat   = findViewById(R.id.btnStartFlat);
         Button btnStartStream = findViewById(R.id.btnStartStream);
+        Button btnStartClient = findViewById(R.id.btnStartClient);   // ★ new
         Button btnStop        = findViewById(R.id.btnStop);
 
         setupPhotoResSpinner();
@@ -107,12 +108,18 @@ public class MainActivity extends AppCompatActivity {
             startActivity(i);
         });
 
-        // ★ Запуск сетевой трансляции
+        // Сервер (старое поведение: ждём клиента)
         btnStartStream.setOnClickListener(v -> {
-            log("Opening STREAMER (raw H.264 over TCP)");
+            log("Opening STREAMER (raw H.264 over TCP server)");
             Intent i = new Intent(this, StreamerActivity.class);
             i.putExtra(StreamerActivity.EXTRA_PORT, StreamerActivity.DEFAULT_PORT);
             startActivity(i);
+        });
+
+        // ★ Новый режим: клиент (отправляем на удалённый сервер)
+        btnStartClient.setOnClickListener(v -> {
+            log("Opening STREAM CLIENT (send raw H.264 to remote)");
+            startActivity(new Intent(this, StreamerClientActivity.class));
         });
 
         btnStop.setOnClickListener(v -> {
