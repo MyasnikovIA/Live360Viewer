@@ -11,39 +11,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Сессия USB-камеры Huawei CV60: live-view H.264 + JPEG-фото.
- *
- * === Управление SCSI-сессией ===
- *
- * Init:                              Teardown (в stop()):
- *   NOTIFY          0x007A            STOP_LIVE_VIEW  0x4812  (всегда, если commOpen)
- *   INQUIRY         0x0012            CLOSE_COMM      0x480B  (если closeCommOnStop)
- *   USB_CORE_INIT   0x4800            [USB_CORE_DEINIT 0x4801 — не отправляется,
- *   START_COMM      0x480A             firmware освобождает ресурсы по CLOSE_COMM]
- *   SET_ALL_SETTINGS 0x4857
- *   CLEAR_BUF       0x481B
- *   GET_FW_VERSION  0x4830
- *   START_LIVE_VIEW 0x4811
- *
- * === video_res ===
- *
- * Байт [4] в SET_ALL_SETTINGS (0x4857). 0x0A → 1280×640 — единственное
- * подтверждённое значение на CV60. Остальные значения (0x07/0x08/0x09/0x0B)
- * — кандидаты, проверять по логу H264Decoder "decoder real size = WxH".
- *
- * Можно менять на лету через changeVideoRes(int): STOP_LIVE_VIEW →
- * SET_ALL_SETTINGS → START_LIVE_VIEW. Использует тот же pause-механизм,
- * что и takePhoto(), — конкурентные вызовы отвергаются.
  */
 public class LiveViewSession {
 
     private static final String TAG = "LiveView";
     private static final int MAX_FRAME = 1 * 1024 * 1024;
     private static final long PHOTO_TIMEOUT_MS = 30_000L;
-
-    /** Ждём полной паузы reader/keepalive перед STOP_LIVE_VIEW. */
     private static final long PAUSE_JOIN_TIMEOUT_MS = 8000L;
-
-    /** reader + keepalive */
     private static final int PAUSE_THREADS = 2;
 
     public interface FrameListener {
@@ -58,7 +32,6 @@ public class LiveViewSession {
     private final UsbBulkTransfer io;
     private final FrameListener listener;
 
-    // ★ Изменяемые: photo_res и video_res можно менять на лету
     private volatile int photoRes;
     private volatile int videoRes;
 
@@ -71,13 +44,8 @@ public class LiveViewSession {
     private volatile boolean pauseRequested = false;
     private volatile CountDownLatch pauseLatch;
 
-    /** true после успешного START_COMM, false после успешного CLOSE_COMM. */
     private volatile boolean commOpen = false;
-
-    /** Закрывать ли comm в stop(). true — полный teardown; false — быстрое переподключение. */
     private volatile boolean closeCommOnStop = true;
-
-    // ============ Constructors ============
 
     public LiveViewSession(UsbDeviceConnection conn, UsbEndpoint epIn, UsbEndpoint epOut,
                            int photoRes, int videoRes, FrameListener l) {
@@ -87,7 +55,6 @@ public class LiveViewSession {
         this.listener = l;
     }
 
-    /** Backward-compat: video_res = 0x0A (1280×640). */
     @Deprecated
     public LiveViewSession(UsbDeviceConnection conn, UsbEndpoint epIn, UsbEndpoint epOut,
                            int photoRes, FrameListener l) {
@@ -99,8 +66,6 @@ public class LiveViewSession {
     public boolean isCommOpen() { return commOpen; }
     public void setCloseCommOnStop(boolean close) { this.closeCommOnStop = close; }
 
-    // ============ Start ============
-
     public boolean start() {
         try {
             byte[] notifyCdb = new byte[]{0x7A, 0x00, 0x02, 0, 0, 0, 0, 0, 0x01, 0x01, 0, 0, 0x0C, 0x01, 0, 0};
@@ -110,8 +75,6 @@ public class LiveViewSession {
             byte[] inqCdb = new byte[]{0x12, 0x00, 0x00, 0x00, 36, 0x00};
             Log.i(TAG, "INQUIRY result=" + exec(0x0012, inqCdb, 36, true, new byte[64]));
 
-            // Если comm уже открыт (closeCommOnStop=false) — пропускаем
-            // USB_CORE_INIT + START_COMM.
             if (!commOpen) {
                 byte[] initCdb = new byte[]{0x7A, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
                 int initRes = exec(0x4800, initCdb, 8, true, new byte[16]);
@@ -122,10 +85,7 @@ public class LiveViewSession {
                 byte[] startCdb = new byte[]{0x7A, 0x00, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
                 int rStartComm = exec(0x480A, startCdb, 0, false, null);
                 Log.i(TAG, "startComm result=" + rStartComm);
-                if (rStartComm < 0) {
-                    Log.w(TAG, "startComm failed — comm stays closed");
-                    return false;
-                }
+                if (rStartComm < 0) return false;
                 commOpen = true;
                 Thread.sleep(200);
             } else {
@@ -150,10 +110,7 @@ public class LiveViewSession {
             running.set(true);
             reader = new Thread(this::readLoop, "LV-reader"); reader.start();
             keepAlive = new Thread(this::keepAliveLoop, "LV-keepalive"); keepAlive.start();
-            Log.i(TAG, "Live view started (photo_res=0x"
-                    + Integer.toHexString(photoRes)
-                    + " video_res=0x" + Integer.toHexString(videoRes)
-                    + " bitrate=8)");
+            Log.i(TAG, "Live view started (photo_res=0x" + Integer.toHexString(photoRes) + " video_res=0x" + Integer.toHexString(videoRes) + " bitrate=8)");
             return true;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -161,18 +118,12 @@ public class LiveViewSession {
         }
     }
 
-    // ============ SET_ALL_SETTINGS ============
-
     private void sendSetAllSettings() {
         byte[] settingsCdb = new byte[]{
                 0x7A, 0x00, 0x04,
-                (byte) (photoRes & 0xFF),       // [3] photo_res (0x03/0x04)
-                (byte) (videoRes & 0xFF),       // [4] video_res (0x07..0x0B)
-                0x00,                            // [5] evb = 0 (auto)
-                0x00,                            // [6] wb = 0
-                0x00,                            // [7] filter = 0
-                0x01,                            // [8] logo = 1
-                0x08,                            // [9] bitrate = 8 (MID)
+                (byte) (photoRes & 0xFF),
+                (byte) (videoRes & 0xFF),
+                0x00, 0x00, 0x00, 0x01, 0x08,
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
         };
         Log.i(TAG, "setSettings photo_res=0x" + Integer.toHexString(photoRes)
@@ -181,12 +132,9 @@ public class LiveViewSession {
                 + exec(0x4857, settingsCdb, 0, false, null));
     }
 
-    // ============ Stop ============
-
     public void stop() {
         if (!running.get()) return;
         running.set(false);
-        // Разбудить reader/keepalive, если они стоят на паузе.
         synchronized (pauseLock) {
             pauseRequested = false;
             pauseLock.notifyAll();
@@ -194,7 +142,6 @@ public class LiveViewSession {
         if (reader != null) { try { reader.join(1500); } catch (InterruptedException ignored) {} reader = null; }
         if (keepAlive != null) { try { keepAlive.join(1000); } catch (InterruptedException ignored) {} keepAlive = null; }
 
-        // 1) STOP_LIVE_VIEW — всегда, если comm ещё открыт
         if (commOpen) {
             try {
                 byte[] stopCdb = new byte[]{0x7A, 0x01, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
@@ -204,62 +151,30 @@ public class LiveViewSession {
             }
         }
 
-        // 2) CLOSE_COMM — закрываем SCSI-сессию, если не просили оставить
         if (commOpen && closeCommOnStop) {
             try {
-                // CDB — зеркало START_COMM {0x7A,0x00,0x01} → {0x7A,0x00,0x02}.
-                // Результат логируется; stop() не падает при ошибке —
-                // следующий start() сделает полный INIT + START_COMM.
                 byte[] closeCdb = new byte[]{0x7A, 0x00, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
                 int r = exec(0x480B, closeCdb, 0, false, null);
                 Log.i(TAG, "closeComm result=" + r);
                 if (r >= 0) {
                     commOpen = false;
-                } else {
-                    Log.w(TAG, "closeComm failed (r=" + r + ") — comm still considered open");
                 }
             } catch (Exception e) {
                 Log.w(TAG, "closeComm: " + e.getMessage());
             }
-        } else if (commOpen && !closeCommOnStop) {
-            Log.i(TAG, "stop: keeping comm open (closeCommOnStop=false) for fast restart");
         }
-
-        // USB_CORE_DEINIT (0x4801) намеренно не отправляется:
-        // Huawei CV60 освобождает ресурсы по CLOSE_COMM; DEINIT на уже
-        // закрытом comm даёт ошибку; деинициализация — при UsbDeviceConnection.close().
     }
 
-    // ============ Runtime change video_res ============
-
-    /**
-     * Меняет разрешение live-stream на лету: STOP_LIVE_VIEW → SET_ALL_SETTINGS
-     * → START_LIVE_VIEW. Использует тот же pause-механизм, что и takePhoto,
-     * поэтому конкурентный вызов takePhoto/changeVideoRes отвергается.
-     *
-     * Не блокирует UI сам по себе, но выполняет USB-команды синхронно —
-     * вызывайте из фонового потока.
-     *
-     * При смене SPS удалённый декодер (VLC/ffplay/H264Decoder) перестроится
-     * автоматически — H264StreamServer кэширует SPS/PPS и отдаст новый IDR.
-     */
     public boolean changeVideoRes(int newVideoRes) {
         if (!running.get()) {
-            // сессия ещё не стартовала — просто запоминаем
             this.videoRes = newVideoRes;
             return true;
         }
         if (newVideoRes == videoRes) return true;
 
-        Log.i(TAG, "changeVideoRes: 0x" + Integer.toHexString(videoRes)
-                + " -> 0x" + Integer.toHexString(newVideoRes));
-
         final CountDownLatch pausedLatch = new CountDownLatch(PAUSE_THREADS);
         synchronized (pauseLock) {
-            if (pauseRequested) {
-                Log.w(TAG, "changeVideoRes: another operation in progress");
-                return false;
-            }
+            if (pauseRequested) return false;
             pauseLatch = pausedLatch;
             pauseRequested = true;
             pauseLock.notifyAll();
@@ -274,26 +189,18 @@ public class LiveViewSession {
             }
             if (!running.get()) return false;
 
-            // STOP_LIVE_VIEW
             byte[] stopCdb = {0x7A, 0x01, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
             Log.i(TAG, "changeVideoRes: stopLive=" + exec(0x4812, stopCdb, 0, false, null));
             Thread.sleep(500);
 
-            // SET_ALL_SETTINGS с новым video_res
             this.videoRes = newVideoRes;
             sendSetAllSettings();
             Thread.sleep(200);
 
-            // START_LIVE_VIEW
-            // byte[9] в START_LIVE_VIEW тоже 0x0A. Если на вашей прошивке
-            // это video_res — замените здесь (и в start(), и в takePhoto/finally).
             byte[] startCdb = {0x7A, 0x01, 0x01, 0, 0, 0, 0, 0, 0x00, 0x0A, 0x00, 0, 0, 0, 0, 0};
             Log.i(TAG, "changeVideoRes: startLive=" + exec(0x4811, startCdb, 0, false, null));
             Thread.sleep(300);
-
-            Log.i(TAG, "changeVideoRes: done, video_res=0x" + Integer.toHexString(newVideoRes));
             return true;
-
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return false;
@@ -305,8 +212,6 @@ public class LiveViewSession {
             }
         }
     }
-
-    // ============ Loops ============
 
     private void keepAliveLoop() {
         byte[] cdb = new byte[]{0x7A, 0x03, (byte) 0xFF};
@@ -353,8 +258,7 @@ public class LiveViewSession {
 
                 if (totalLen > 0) {
                     if (pauseRequested && running.get()) {
-                        Log.d(TAG, "readLoop: pause requested mid-frame, dropping "
-                                + totalLen + " bytes");
+                        Log.d(TAG, "readLoop: pause requested mid-frame, dropping " + totalLen + " bytes");
                     } else {
                         parseFrame(frameBuf, totalLen);
                     }
@@ -381,8 +285,6 @@ public class LiveViewSession {
         System.arraycopy(buf, start, h264, 0, n - start);
         if (listener != null) listener.onVideoFrame(h264, System.nanoTime() / 1000L);
     }
-
-    // ============ Photo ============
 
     public void takePhoto(PhotoListener listener) {
         if (listener == null) return;
@@ -417,8 +319,7 @@ public class LiveViewSession {
                     return;
                 }
                 if (!paused) {
-                    Log.w(TAG, "photo: pause timeout — proceeding anyway ("
-                            + pausedLatch.getCount() + " thread(s) still busy)");
+                    Log.w(TAG, "photo: pause timeout — proceeding anyway (" + pausedLatch.getCount() + " thread(s) still busy)");
                 } else {
                     Log.i(TAG, "photo: reader/keepalive paused, sending STOP_LIVE_VIEW");
                 }
@@ -431,10 +332,7 @@ public class LiveViewSession {
                 Thread.sleep(500);
 
                 // 2) Повторно применяем настройки фото
-                Log.i(TAG, "photo: re-sending setSettings photo_res=0x"
-                        + Integer.toHexString(photoRes)
-                        + " video_res=0x" + Integer.toHexString(videoRes)
-                        + " bitrate=8");
+                Log.i(TAG, "photo: re-sending setSettings photo_res=0x" + Integer.toHexString(photoRes) + " video_res=0x" + Integer.toHexString(videoRes) + " bitrate=8");
                 sendSetAllSettings();
                 Thread.sleep(200);
 
@@ -541,8 +439,7 @@ public class LiveViewSession {
                 }
 
                 int kb = jpeg.length / 1024;
-                Log.i(TAG, "photo: final size=" + kb + " KB (photo_res=0x"
-                        + Integer.toHexString(photoRes) + ")");
+                Log.i(TAG, "photo: final size=" + kb + " KB (photo_res=0x" + Integer.toHexString(photoRes) + ")");
                 if (kb < 100) {
                     Log.w(TAG, "photo: VERY SMALL — проверьте photo_res и bitrate");
                 } else if (kb < 300) {
@@ -572,8 +469,6 @@ public class LiveViewSession {
         }, "LV-photo").start();
     }
 
-    // ============ Pause ============
-
     private void waitIfPaused() {
         synchronized (pauseLock) {
             CountDownLatch signaled = null;
@@ -591,8 +486,6 @@ public class LiveViewSession {
             }
         }
     }
-
-    // ============ Helpers ============
 
     private static int findJpegStart(byte[] buf) {
         for (int i = 0; i < buf.length - 2; i++) {

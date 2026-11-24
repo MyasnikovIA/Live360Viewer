@@ -1,56 +1,53 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="ru.miacomsoft.live360viewer">
 
-    <uses-permission android:name="android.permission.INTERNET"/>
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-feature android:name="android.hardware.usb.host" android:required="true" />
+
+    <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-feature android:name="android.hardware.usb.host" android:required="true"/>
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28"/>
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
 
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
-        android:usesCleartextTraffic="true"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
         android:theme="@style/Theme.Live360Viewer">
 
-        <activity
-            android:name=".MainActivity"
-            android:exported="true">
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
-        <activity
-            android:name=".ViewerActivity"
+        <activity android:name=".ViewerActivity" android:exported="false"
             android:configChanges="orientation|screenSize|keyboardHidden"
-            android:screenOrientation="landscape"
-            android:exported="false" />
+            android:screenOrientation="landscape" />
 
-        <!-- ★ WebRTC сервер (браузер) -->
-        <activity
-            android:name=".StreamerActivity"
-            android:configChanges="orientation|screenSize|keyboardHidden"
-            android:screenOrientation="portrait"
-            android:exported="false" />
+        <activity android:name=".StreamerClientActivity" android:exported="false" />
+        <activity android:name=".StreamerActivity" android:exported="false" />
+        <activity android:name=".VlcStreamerActivity" android:exported="false" />
 
-        <!-- ★ VLC сервер (raw H.264 over TCP) -->
-        <activity
-            android:name=".VlcStreamerActivity"
-            android:configChanges="orientation|screenSize|keyboardHidden"
-            android:screenOrientation="portrait"
-            android:exported="false" />
-
-        <!-- ★ Клиент (отправка на удалённый сервер) -->
-        <activity
-            android:name=".StreamerClientActivity"
-            android:configChanges="orientation|screenSize|keyboardHidden"
-            android:screenOrientation="portrait"
-            android:exported="false" />
     </application>
-
 </manifest>
